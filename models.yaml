@@ -1,0 +1,58 @@
+# Model endpoints. Every engine binds to 127.0.0.1. Hot-reloaded.
+# Main models share the GPU and most of the RAM, so only one runs at a time:
+# picking another one in the UI stops the current engine and starts the new one.
+
+main:
+  - id: qwen3.8-27b
+    name: Qwen3.8 27B (Q4_K_M, llama.cpp)
+    engine: llama-server
+    port: 8081
+    base_url: http://127.0.0.1:8081/v1
+    model: models/qwen27b/Qwen3.8-27B-UD-Q4_K_M.gguf
+    mmproj: models/qwen27b/mmproj-F16.gguf
+    context: 32768
+    # gpu_layers unset: llama-server's --fit picks the layers that fit (1 GiB VRAM margin)
+    draft: models/qwen27b/mtp-Qwen3.8-27B-Q4_0.gguf   # MTP head for speculative decoding
+    threads: 8
+    supports_tools: true
+    supports_vision: true
+    reasoning_levels: [off, low, medium, high]
+    max_concurrency: 1
+
+  - id: qwen3.8-flash-next
+    name: Qwen3.8-Flash-Next (IQ2_XS, Strata)
+    engine: strata
+    port: 8080
+    base_url: http://127.0.0.1:8080/v1
+    command: vendor/Strata/run-iq2_xs.sh
+    setup_args: [--kv, q4_0, --draft-vocab, en]   # 6 GB card: smaller KV cache and draft head; drop on 12 GB+
+    context: 24576             # 32K left Strata ~145 MiB of VRAM spare: one more GPU program (e.g. ComfyUI) and it ran out
+    supports_tools: true
+    supports_vision: false
+    reasoning_levels: [off, low, medium, high]
+    max_concurrency: 1
+
+  # Listed in the selector as "Coming soon".
+  - id: cloud-fallback
+    name: Cloud fallback
+    coming_soon: true
+  - id: qwen3.6-35b-a3b
+    name: Qwen3.6-35B-A3B (path C)
+    coming_soon: true
+
+decision:
+  - id: jebadiah-9b-v2
+    name: Jebadiah 9B v2 (Q8_0)
+    engine: llama-server
+    port: 8090
+    model: models/jebadiah/jebadiah-9b-v2-Q8_0.gguf
+    context: 4096
+    gpu_layers: 0              # weights in RAM; prompt batches still run on the GPU (op offload)
+    threads: 8
+    tokenizer: models/jebadiah
+  - id: rune-26b-a4b-v3
+    name: Rune 26B-A4B v3
+    coming_soon: true
+  - id: clm-8b            # to evaluate later as an alternative decision model
+    name: CLM 8B
+    coming_soon: true

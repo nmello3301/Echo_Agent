@@ -1,0 +1,3 @@
+[submodule "vendor/HuginVoiceNotes"]
+	path = vendor/HuginVoiceNotes
+	url = https://github.com/nmello3301/HuginVoiceNotes

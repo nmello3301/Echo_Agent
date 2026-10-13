@@ -1,0 +1,13 @@
+models/
+# vendor/HuginVoiceNotes is a git submodule; llama.cpp and Strata come from the Dockerfile (or the native setup)
+vendor/*
+!vendor/HuginVoiceNotes
+.env
+node_modules/
+dist/
+data/
+*.log
+.venv/
+__pycache__/
+evals/decisions.jsonl
+evals/rag-notes/*.wav

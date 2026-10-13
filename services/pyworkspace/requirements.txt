@@ -1,0 +1,6 @@
+matplotlib==3.11.2
+Pint==0.26.1
+ruff==0.16.10
+scipy==1.18.1
+sympy==1.14.0
+trimesh==5.1.1

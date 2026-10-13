@@ -1,0 +1,16 @@
+# SearXNG for Echo: local only, JSON output on, no rate limiter (single user).
+use_default_settings: true
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+  secret_key: "echo-local-only-not-exposed"
+  limiter: false
+  image_proxy: false
+  public_instance: false
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json
+general:
+  instance_name: "Echo search"

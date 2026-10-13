@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0d0f13;
+  --color-panel: #14171d;
+  --color-panel-2: #1a1e26;
+  --color-line: #262b35;
+  --color-text: #e6e8ec;
+  --color-dim: #8b93a3;
+  --color-accent: #7dd3fc;
+  --color-good: #4ade80;
+  --color-warn: #fbbf24;
+  --color-bad: #f87171;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+html, body, #root { height: 100%; }
+body { background: var(--color-bg); color: var(--color-text); font-family: var(--font-sans); font-size: 14px; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #2a303b; border-radius: 4px; }
+.prose-echo p { margin: 0.4em 0; }
+.prose-echo ul { list-style: disc; padding-left: 1.4em; }
+.prose-echo ol { list-style: decimal; padding-left: 1.4em; }
+.prose-echo h1, .prose-echo h2, .prose-echo h3 { font-weight: 600; margin: 0.8em 0 0.3em; }
+.prose-echo code { font-family: var(--font-mono); font-size: 0.9em; background: #1f242d; padding: 0.1em 0.3em; border-radius: 4px; }
+.prose-echo pre code { background: none; padding: 0; }
+.prose-echo table { border-collapse: collapse; }
+.prose-echo td, .prose-echo th { border: 1px solid var(--color-line); padding: 2px 8px; }
+.prose-echo a { color: var(--color-accent); text-decoration: underline; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }

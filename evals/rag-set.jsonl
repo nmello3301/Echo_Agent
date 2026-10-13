@@ -1,0 +1,22 @@
+{"q": "what torque do the M5 bolts on the scotch yoke need now?", "want": "scotch-yoke-revision-b"}
+{"q": "why did the yoke housing crack?", "want": "scotch-yoke-housing-cracked"}
+{"q": "how loud was the gearbox and did grease help?", "want": "gearbox-noise-test"}
+{"q": "what current did I set on the MKS servo?", "want": "robot-arm-servo-tuning"}
+{"q": "when is the qualification text due?", "want": "meeting-with-ricardo"}
+{"q": "what was the original qualification deadline?", "want": "qualification-outline"}
+{"q": "at what rpm did the simulator stall?", "want": "servo-simulator-results"}
+{"q": "how long is my ENIAC presentation?", "want": "eniac-2026-abstract"}
+{"q": "coyote time and jump buffer values", "want": "platformer-jump-feel"}
+{"q": "which renderer should I export the game with?", "want": "godot-export-settings"}
+{"q": "what is the chair's seat height?", "want": "blender-chair-model"}
+{"q": "how many cycles samples are enough?", "want": "blender-render-settings"}
+{"q": "when is the dentist?", "want": "dentist"}
+{"q": "how much PETG filament is left?", "want": "filament-inventory"}
+{"q": "bed temperature for PETG", "want": "3d-printer-nozzle"}
+{"q": "how much did the CPU temperature drop after new paste?", "want": "laptop-thermal-paste"}
+{"q": "ideas for level 4", "want": "platformer-level-ideas"}
+{"q": "qual a corrente que configurei no servo?", "want": "robot-arm-servo-tuning"}
+{"q": "quando devo entregar o texto da qualificação?", "want": "meeting-with-ricardo"}
+{"q": "quanto filamento PETG ainda tenho?", "want": "filament-inventory"}
+{"q": "what did I want Echo to do with my notes?", "want": "echo-idea"}
+{"q": "scotch yoke notes from August", "want": "scotch-yoke", "since": "2026-08-01", "until": "2026-08-31"}

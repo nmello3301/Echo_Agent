@@ -1,0 +1,44 @@
+# Echo platform settings. Hot-reloaded: edits apply without a restart (ports need a restart).
+host: 127.0.0.1
+ports:
+  ui: 7777            # backend + web UI
+  decision: 8091      # Python decision server (Jebadiah renderer)
+  search: 8888        # SearXNG (Docker container echo-searxng)
+  embed: 8093         # notes RAG: Qwen3-Embedding-0.6B
+  rerank: 8094        # notes RAG: Qwen3-Reranker-0.6B
+  hugin: 8088         # Hugin voice notes (Docker stack in vendor/HuginVoiceNotes)
+  tts: 8095           # Read tab: Piper text-to-speech (services/tts)
+
+paths:
+  data: data          # SQLite, logs, Pi state
+  evals: evals        # decisions.jsonl and eval tasks
+  llama_server: vendor/llama.cpp/bin/llama-server
+
+# Main model loaded on `./echo up`. Must be an id from models.yaml `main`.
+default_model: qwen3.8-27b
+
+agent:
+  step_budget: 8              # tool calls per action time before a checkpoint
+  default_effort: low
+  sandbox: true               # run the agent's bash inside bubblewrap
+  network: false              # network inside the sandbox
+  checkpoints: true           # git checkpoint before each edit batch
+
+thresholds:
+  needs_human: 0.5            # P(true) above this pauses the run and asks you
+  action_safe: 0.5            # P(true) below this drops a queued action
+  stalled_replans: 2          # "stalled" this many times in a row forces a re-plan
+
+notify:
+  desktop: true               # notify-send (mako)
+  ntfy_url: ""                # e.g. http://127.0.0.1:2586/echo ; empty = off
+
+# Notes RAG: Markdown folders indexed for search (Hugin writes its notes to the first one).
+# Add more folders (an Obsidian vault, project notes, ...) and they are indexed automatically.
+notes:
+  dirs:
+    - data/hugin/notes
+  hugin_dir: vendor/HuginVoiceNotes
+
+monitor:
+  interval_ms: 1000

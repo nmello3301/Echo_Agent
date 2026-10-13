@@ -1,0 +1,139 @@
+# Echo + its services in Docker. First time on a device:
+#   ./setup.sh          (Linux)   or   .\setup.ps1   (Windows, PowerShell)   → writes .env
+#   docker compose up -d --build
+# Then open http://127.0.0.1:7777. Models download from the Models tab into ./models (kept on the host).
+# Needs an NVIDIA GPU: Linux with the NVIDIA Container Toolkit, or Windows with Docker Desktop (WSL2 backend).
+# Don't run this and the native ./echo at the same time: they use the same ports and data folder.
+name: echo
+
+x-hugin-env: &hugin-env
+  HUGIN_API_TOKEN: ${HUGIN_API_TOKEN:?run ./setup.sh (or setup.ps1) first}
+  HUGIN_UI_PASSWORD: ${HUGIN_UI_PASSWORD:?run ./setup.sh (or setup.ps1) first}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DATA_DIR: /data
+  NOTES_DIR: /data/notes
+  AUDIO_DIR: /data/audio
+  MODELS_DIR: /data/models
+  STT_URL: http://stt:8089
+  OLLAMA_URL: http://ollama:11434
+  NTFY_URL: http://ntfy:80
+  NTFY_TOPIC: ${NTFY_TOPIC:-hugin-echo}
+  NTFY_BASE_URL: http://127.0.0.1:${NTFY_PORT:-8092}
+  LLM_CLEANUP_MODEL: ${HUGIN_LLM:-qwen2.5:3b-instruct}
+  LLM_SUMMARY_MODEL: ${HUGIN_LLM:-qwen2.5:3b-instruct}
+  LLM_AUTOPULL: "true"
+  DIARIZATION_ENABLED: "false"
+  AUDIO_RETENTION_DAYS: ${AUDIO_RETENTION_DAYS:-14}
+  TZ: ${TZ:-UTC}
+
+services:
+  echo:
+    build: .
+    image: echo:local
+    container_name: echo
+    # Run as the host user so files written to ~/Projects and ./data stay owned by you
+    user: "${ECHO_UID:-1000}:${ECHO_GID:-1000}"
+    environment:
+      ECHO_HOST: 0.0.0.0
+      ECHO_EXTERNAL_SERVICES: "1"
+      ECHO_SEARCH_URL: http://searxng:8080
+      ECHO_HUGIN_URL: http://hugin-api:8088
+      HUGIN_API_TOKEN: ${HUGIN_API_TOKEN}
+      HUGIN_UI_PASSWORD: ${HUGIN_UI_PASSWORD}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "127.0.0.1:${ECHO_PORT:-7777}:7777"
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+      - ./evals:/app/evals          # decisions.jsonl: the decision model's log, for evals
+      # Config you edit on the host. Editors that replace the file need `docker compose restart echo` to apply.
+      - ./echo.yaml:/app/echo.yaml
+      - ./models.yaml:/app/models.yaml
+      - ./rules.md:/app/rules.md
+      - strata:/app/vendor/Strata
+      # The agent's working area: the same path inside as outside on Linux, /projects on Windows (see .env)
+      - ${PROJECTS_DIR:?run ./setup.sh (or setup.ps1) first}:${PROJECTS_MOUNT:-/projects}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # The agent's bash and Python tools run in bubblewrap, which needs user namespaces
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+      - systempaths=unconfined
+    # Strata pins its expert arena in RAM (cudaHostRegister)
+    ulimits:
+      memlock: -1
+    depends_on: [searxng, hugin-api]
+    restart: unless-stopped
+
+  searxng:
+    image: searxng/searxng:latest
+    volumes:
+      - ./services/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    restart: unless-stopped
+
+  # ---- Hugin (voice notes): the CPU profile of vendor/HuginVoiceNotes/docker-compose.yml ----
+  hugin-api:
+    build: ./vendor/HuginVoiceNotes/server/api
+    image: hugin/api:latest
+    environment: *hugin-env
+    ports:
+      - "127.0.0.1:${HUGIN_PORT:-8088}:8088"   # Echo's Hugin tab shows Hugin's own pages from here
+    volumes:
+      - ./data/hugin:/data
+      - ./vendor/HuginVoiceNotes/server/api/app/prompts:/app/app/prompts:ro
+      - ./vendor/HuginVoiceNotes/DECISIONS.md:/app/DECISIONS.md:ro
+    depends_on: [ntfy]
+    restart: unless-stopped
+
+  hugin-worker:
+    image: hugin/api:latest
+    command: ["python", "-m", "app.worker"]
+    environment: *hugin-env
+    volumes:
+      - ./data/hugin:/data
+      - ./vendor/HuginVoiceNotes/server/api/app/prompts:/app/app/prompts:ro
+      - ./vendor/HuginVoiceNotes/DECISIONS.md:/app/DECISIONS.md:ro
+    depends_on: [hugin-api]
+    restart: unless-stopped
+
+  stt:
+    build:
+      context: ./vendor/HuginVoiceNotes/server/stt
+      dockerfile: Dockerfile.cpu
+    image: hugin/stt-cpu:latest
+    environment:
+      STT_MODEL: ${STT_MODEL_CPU:-distil-large-v3}
+      STT_COMPUTE_TYPE: int8
+      STT_DEVICE: cpu
+      DIARIZATION_ENABLED: "false"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./data/hugin/models:/models
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_KEEP_ALIVE: 30m
+    volumes:
+      - ./data/hugin/ollama:/root/.ollama
+    restart: unless-stopped
+
+  ntfy:
+    image: binwiederhier/ntfy:latest
+    command: ["serve", "--base-url=http://127.0.0.1:${NTFY_PORT:-8092}", "--behind-proxy"]
+    ports:
+      - "127.0.0.1:${NTFY_PORT:-8092}:80"
+    volumes:
+      - ./data/hugin/ntfy:/var/cache/ntfy
+    restart: unless-stopped
+
+volumes:
+  strata:

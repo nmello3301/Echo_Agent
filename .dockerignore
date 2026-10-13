@@ -1,0 +1,12 @@
+.git
+.env
+models
+data
+vendor
+node_modules
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+*.log
+evals/decisions.jsonl

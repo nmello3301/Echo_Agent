@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Echo launcher: ./echo up | down | restart | status | logs | open
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")"
+# Launched from the desktop, the login shell's PATH (and mise's Node) may be missing.
+for d in "$HOME/.local/share/mise/shims" "$HOME/.local/bin" /usr/local/bin /usr/bin; do
+  [[ -d $d && ":$PATH:" != *":$d:"* ]] && PATH="$d:$PATH"
+done
+command -v node >/dev/null || { echo "Node.js not found (install it or check mise)"; exit 1; }
+PIDFILE=data/echo.pid
+LOG=data/logs/echo.log
+PORT=$(grep -A2 '^ports:' echo.yaml | awk '/ui:/{print $2}')
+URL="http://127.0.0.1:${PORT:-7777}"
+mkdir -p data/logs
+
+running() { [[ -f $PIDFILE ]] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; }
+
+open_ui() {
+  if command -v omarchy-launch-webapp >/dev/null; then omarchy-launch-webapp "$URL" >/dev/null 2>&1 &
+  else xdg-open "$URL" >/dev/null 2>&1 & fi
+}
+
+case "${1:-up}" in
+  up)
+    if running; then echo "Echo is already running: $URL"; exit 0; fi
+    [[ -d node_modules ]] || npm install
+    if [[ ! -f apps/web/dist/index.html ]] || [[ -n $(find apps/web/src apps/web/index.html -newer apps/web/dist/index.html -print -quit) ]]; then
+      echo "Building the UI…"; npm run build --silent >/dev/null
+    fi
+    [[ -x services/decision/.venv/bin/python ]] || { python3 -m venv services/decision/.venv && services/decision/.venv/bin/pip install -q -r services/decision/requirements.txt; }
+    echo "Starting Echo (engines load in the background; the main model takes ~10 s, Strata 1-3 min)…"
+    nohup node apps/server/src/main.ts >>"$LOG" 2>&1 &
+    echo $! >"$PIDFILE"
+    for _ in $(seq 1 40); do curl -sf "$URL/api/models" >/dev/null && break; sleep 0.25; done
+    if ! curl -sf "$URL/api/models" >/dev/null; then echo "Echo did not start; see $LOG"; tail -20 "$LOG"; exit 1; fi
+    echo "Echo is up: $URL"
+    [[ ${ECHO_NO_OPEN:-} ]] || open_ui
+    ;;
+  down)
+    if ! running; then echo "Echo is not running."; rm -f $PIDFILE; exit 0; fi
+    pid=$(cat $PIDFILE); kill "$pid"
+    for _ in $(seq 1 120); do kill -0 "$pid" 2>/dev/null || break; sleep 0.25; done
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid"
+    rm -f $PIDFILE; echo "Echo stopped (engines stopped too)."
+    ;;
+  restart) "$0" down; "$0" up ;;
+  status)
+    if running; then echo "Echo running (pid $(cat $PIDFILE)) at $URL"; curl -s "$URL/api/engines" | python3 -c 'import json,sys
+for e in json.load(sys.stdin): print("  %-24s %-9s %s" % (e["id"], e["status"], e.get("error", "")))'
+    else echo "Echo is not running."; fi
+    ;;
+  logs) tail -f "$LOG" data/logs/*.log ;;
+  open) open_ui ;;
+  *) echo "usage: ./echo up|down|restart|status|logs|open"; exit 2 ;;
+esac

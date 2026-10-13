@@ -1,0 +1,15 @@
+{
+  "name": "echo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": ["apps/server", "apps/web"],
+  "scripts": {
+    "build": "npm run build -w apps/web",
+    "dev:web": "npm run dev -w apps/web",
+    "server": "node apps/server/src/main.ts",
+    "test": "node --test \"apps/server/test/*.test.ts\"",
+    "typecheck": "tsc -p apps/server && tsc -p apps/web --noEmit"
+  },
+  "engines": { "node": ">=22.19" }
+}

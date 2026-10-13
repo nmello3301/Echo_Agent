@@ -1,0 +1,9 @@
+# Echo's additions to Hugin's compose file (Hugin's own files stay untouched).
+# Containers use the laptop's timezone, so note dates and file names match your clock.
+services:
+  api:
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+  worker:
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
