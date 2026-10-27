@@ -330,15 +330,18 @@ function ragSpecs(): Spec[] {
   ];
 }
 
-/** Read tab's text-to-speech: Piper, CPU-only, the voice loaded once (services/tts/server.py). */
+/** Read tab's text-to-speech: Piper and Pocket TTS (voice cloning), CPU-only (services/tts/server.py).
+ * Voices download into models/ (Pocket TTS through the Hugging Face cache there); cloned voices are kept in data/. */
 export function ttsSpec(): Spec {
   const port = config.echo.ports.tts ?? 8095;
   return {
     id: "tts",
-    name: "Text to speech (Piper)",
+    name: "Text to speech (Piper, Pocket TTS)",
     role: "decision-server",
     cmd: path.join(ROOT, "services/tts/.venv/bin/python"),
-    args: [path.join(ROOT, "services/tts/server.py"), "--port", String(port), "--voice", abs("models/tts/en_US-lessac-medium.onnx")],
+    args: [path.join(ROOT, "services/tts/server.py"), "--port", String(port), "--voices-dir", abs("models/tts"),
+      "--clones-dir", abs(path.join(config.echo.paths.data, "tts/voices"))],
+    env: { HF_HUB_CACHE: abs("models/tts/hf") },
     healthUrl: `http://127.0.0.1:${port}/health`,
   };
 }

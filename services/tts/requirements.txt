@@ -1,1 +1,4 @@
+# CPU build of PyTorch for Pocket TTS (PyPI's default Linux build adds ~3 GB of CUDA libraries it doesn't use)
+--extra-index-url https://download.pytorch.org/whl/cpu
 piper-tts==1.8.0
+pocket-tts==4.0.1

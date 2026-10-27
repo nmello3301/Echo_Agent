@@ -30,11 +30,30 @@ Right-click either one for **Stop Echo**. `Start Echo.sh` and `Stop Echo.sh` in 
 
 Keys: Alt+1..6 switch tabs, Alt+M collapses the Monitor.
 
+## Chat tab
+
+*Search the web* gives the model `web_search` (SearXNG) and `fetch_page`, the agent's own web tools: it decides
+when to search, reads the best pages and cites them as [1], [2], with the queries and linked sources under the
+answer. *Use my notes* puts matching passages from your notes in front of each question. Both can be on.
+
 ## Read tab
 
 Paste a screenshot (Ctrl+V, or *Paste from clipboard*) or type in the text box: Echo reads the text with Tesseract
-and speaks it with Piper (`services/tts`, voice in `models/tts/`). *Auto summarize + read* speaks a 2-5 sentence
-summary from the active main model instead of the full text. Ctrl+Enter in the box reads it.
+and speaks it (`services/tts`). *Auto summarize + read* speaks a 2-5 sentence summary from the active main model
+instead of the full text. Ctrl+Enter in the box reads it.
+
+*Change voice* lists the voices with a ▶ button to hear each one first (on your own test sentence, if you like):
+
+- **Default voices.** *Fast* voices are Piper: quick even for long texts, each one downloaded on first use into
+  `models/tts/`. *Natural* voices are Kyutai's Pocket TTS: more human, about 2x real time on the CPU, so better
+  for shorter texts and summaries. Its model (220 MB) downloads on first use into `models/tts/hf/`.
+- **Clone a voice.** Upload a recording (WAV, MP3, M4A, OGG or FLAC; 10-30 s of one person speaking clearly). The
+  browser trims and converts it, Pocket TTS turns it into a voice, and it is kept in `data/tts/voices/`. Kyutai's
+  cloning weights are free but gated: accept the terms at https://huggingface.co/kyutai/pocket-tts with a Hugging
+  Face account, then give Echo a read token: `HF_TOKEN=` in `.env` and `docker compose up -d` (Docker), or
+  `services/tts/.venv/bin/hf auth login` and `./echo restart` (native).
+
+After updating a native install, run `services/tts/.venv/bin/pip install -r services/tts/requirements.txt` once.
 
 ## Rules: what the agent may do without asking
 

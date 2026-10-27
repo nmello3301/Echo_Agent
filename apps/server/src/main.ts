@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
+import http from "node:http";
 import path from "node:path";
 import { serve } from "@hono/node-server";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { WebSocketServer } from "ws";
 import { hitlVerdict, pastRuns, runEvents, runs, startRun } from "./agent.ts";
@@ -13,9 +14,10 @@ import { db, now } from "./db.ts";
 import { decisions, type Questions } from "./decision.ts";
 import { buildStrata, cancelDownload, catalogStatus, startDownload } from "./downloads.ts";
 import { activeMain, activeMainId, allEngines, engineById, huginEnv, startDecision, startHugin, startRag, startSearch, startTts, stopAll, useMainModel } from "./engines.ts";
-import { type Effort, effortFields, streamChat } from "./llm.ts";
+import { type Effort, effortFields, type StreamResult, streamChat } from "./llm.ts";
 import { lastSample, startMonitor } from "./monitor.ts";
 import { formatSources, indexStatus, listNotes, readNote, searchNotes, startIndexer, syncIndex } from "./rag.ts";
+import { chatWithWeb, type WebSource } from "./webchat.ts";
 
 const app = new Hono();
 const chatAborts = new Map<string, AbortController>();
@@ -83,7 +85,7 @@ app.delete("/api/conversations/:id", (c) => {
 
 // ---------- chat ----------
 app.post("/api/chat", async (c) => {
-  const body = await c.req.json<{ conversationId?: string; model: string; effort: Effort; content: unknown; notes?: boolean }>();
+  const body = await c.req.json<{ conversationId?: string; model: string; effort: Effort; content: unknown; notes?: boolean; web?: boolean }>();
   let convId = body.conversationId;
   const text = typeof body.content === "string" ? body.content : (body.content as any[]).find((p) => p.type === "text")?.text ?? "Image";
   if (!convId) {
@@ -110,7 +112,7 @@ app.post("/api/chat", async (c) => {
       const m = activeMain()!.model;
       // "Use my notes": retrieve passages for this question and put them in front of it (the earlier turns stay
       // byte-identical, so the engine's prompt cache still covers them).
-      let sources: { title: string; created: string; path: string; heading: string; score: number }[] = [];
+      let sources: ({ title: string; created: string; path: string; heading: string; score: number } | WebSource)[] = [];
       let messages = history;
       if (body.notes) {
         await stream.writeSSE({ event: "status", data: JSON.stringify({ text: "Searching your notes…" }) });
@@ -124,10 +126,21 @@ app.post("/api/chat", async (c) => {
         const q = typeof last.content === "string" ? last.content : text;
         messages = [...messages.slice(0, -1), { role: "user", content: `${ctx}\n\nMy question: ${q}` }];
       }
-      const res = await streamChat(m, { messages, ...effortFields(m, body.effort), cache_prompt: true }, async (d) => {
+      const req = { messages, ...effortFields(m, body.effort), cache_prompt: true };
+      const relay = async (d: { content?: string; reasoning?: string }) => {
         await stream.writeSSE({ event: "delta", data: JSON.stringify(d) });
-      }, ac.signal, "chat");
-      const stats = { ...res.timings, ttft_ms: res.ttftMs, aborted: res.aborted, model: m.id, effort: body.effort, sources: sources.length ? sources : undefined };
+      };
+      // "Search the web": the model gets web_search and fetch_page and decides when to use them
+      let searches: string[] | undefined;
+      let res: StreamResult;
+      if (body.web) {
+        const status = (t: string) => stream.writeSSE({ event: "status", data: JSON.stringify({ text: t }) });
+        const r = await chatWithWeb(m, req, relay, status, ac.signal, sources.length + 1);
+        sources = [...sources, ...r.sources];
+        searches = r.searches.length ? r.searches : undefined;
+        res = r;
+      } else res = await streamChat(m, req, relay, ac.signal, "chat");
+      const stats = { ...res.timings, ttft_ms: res.ttftMs, aborted: res.aborted, model: m.id, effort: body.effort, sources: sources.length ? sources : undefined, searches };
       db.prepare("INSERT INTO messages (conversation_id, role, content, reasoning, stats, created_at) VALUES (?,?,?,?,?,?)")
         .run(id, "assistant", JSON.stringify(res.content), res.reasoning || null, JSON.stringify(stats), now());
       await stream.writeSSE({ event: "done", data: JSON.stringify({ stats }) });
@@ -328,13 +341,68 @@ app.post("/api/read/summarize", async (c) => {
   }
 });
 
-app.post("/api/read/tts", async (c) => {
-  const body = await c.req.json<{ text: string; speed?: number }>();
+/** A request to the TTS service (services/tts/server.py), started first when it isn't running. node:http, not
+ * fetch: fetch gives up after 5 minutes without an answer, and a long text in a Pocket TTS voice takes longer. */
+async function tts(pathname: string, method = "GET", body?: string): Promise<{ status: number; data: Buffer }> {
+  await startTts(); // returns at once when it is already running
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: "127.0.0.1", port: config.echo.ports.tts ?? 8095, path: pathname, method }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (b: Buffer) => chunks.push(b));
+      res.on("end", () => resolve({ status: res.statusCode ?? 502, data: Buffer.concat(chunks) }));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+const ttsJson = (r: { data: Buffer }) => JSON.parse(r.data.toString());
+/** The service's own error message; a 400 (unknown voice, bad sample) is the caller's to fix, the rest is ours. */
+function ttsFailed(c: Context, r: { status: number; data: Buffer }) {
+  let error = `TTS answered ${r.status}`;
   try {
-    await startTts(); // returns at once when it is already running
-    const r = await fetch(`http://127.0.0.1:${config.echo.ports.tts ?? 8095}/tts`, { method: "POST", body: JSON.stringify(body) });
-    if (!r.ok) return c.json({ error: ((await r.json().catch(() => ({}))) as { error?: string }).error ?? `TTS answered ${r.status}` }, 502);
-    return c.body(new Uint8Array(await r.arrayBuffer()), 200, { "Content-Type": "audio/wav" });
+    error = ttsJson(r).error ?? error;
+  } catch {}
+  return c.json({ error }, r.status === 400 ? 400 : 502);
+}
+
+app.post("/api/read/tts", async (c) => {
+  const body = await c.req.json<{ text: string; speed?: number; voice?: string }>();
+  try {
+    const r = await tts("/tts", "POST", JSON.stringify(body));
+    if (r.status !== 200) return ttsFailed(c, r);
+    return c.body(new Uint8Array(r.data), 200, { "Content-Type": "audio/wav" });
+  } catch (e) {
+    return c.json(err(e), 503);
+  }
+});
+
+// The voices the Read tab can use: Piper and Pocket TTS defaults, plus voices cloned from a sample
+app.get("/api/read/voices", async (c) => {
+  try {
+    const r = await tts("/voices");
+    return r.status === 200 ? c.json(ttsJson(r)) : ttsFailed(c, r);
+  } catch (e) {
+    return c.json(err(e), 503);
+  }
+});
+
+app.post("/api/read/voices", async (c) => {
+  const { name, audio } = await c.req.json<{ name: string; audio: string }>();
+  const m = /^data:audio\/(?:wav|x-wav|wave);base64,(.+)$/i.exec(audio ?? "");
+  if (!m) return c.json({ error: "expected a WAV sample as a data: URL" }, 400);
+  try {
+    const r = await tts("/voices", "POST", JSON.stringify({ name, audio: m[1] }));
+    return r.status === 200 ? c.json(ttsJson(r)) : ttsFailed(c, r);
+  } catch (e) {
+    return c.json(err(e), 503);
+  }
+});
+
+app.delete("/api/read/voices/:id", async (c) => {
+  try {
+    const r = await tts(`/voices/${encodeURIComponent(c.req.param("id"))}`, "DELETE");
+    return r.status === 200 ? c.json({ ok: true }) : ttsFailed(c, r);
   } catch (e) {
     return c.json(err(e), 503);
   }

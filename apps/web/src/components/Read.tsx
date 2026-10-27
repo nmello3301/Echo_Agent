@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api.ts";
+import { api, toDataUrl } from "../api.ts";
 import { Badge, Button, Select } from "./ui.tsx";
+import { ChangeVoice, stopVoiceTest, synthesize, useVoices } from "./Voices.tsx";
 
 type Step = "idle" | "ocr" | "summarize" | "speak";
 const STEP_LABEL: Record<Step, string> = { idle: "", ocr: "Reading the screenshot…", summarize: "Summarizing…", speak: "Making speech…" };
@@ -20,14 +21,6 @@ function save(k: string, v: unknown) {
   } catch {}
 }
 
-const toDataUrl = (blob: Blob) =>
-  new Promise<string>((resolve, reject) => {
-    const rd = new FileReader();
-    rd.onload = () => resolve(rd.result as string);
-    rd.onerror = () => reject(rd.error);
-    rd.readAsDataURL(blob);
-  });
-
 /** Paste a screenshot (Ctrl+V anywhere on this tab), read its text with OCR and speak it, or a summary of it. */
 export function Read({ active }: { active: boolean }) {
   const [image, setImage] = useState<string>();
@@ -41,6 +34,7 @@ export function Read({ active }: { active: boolean }) {
   const [speaking, setSpeaking] = useState<"text" | "summary">();
   const audio = useRef<HTMLAudioElement>(null);
   const run = useRef(0); // a newer paste cancels the pipeline of an older one
+  const voices = useVoices();
 
   useEffect(() => save("echo.read.autoSummarize", auto), [auto]);
   useEffect(() => save("echo.read.speed", speed), [speed]);
@@ -49,15 +43,18 @@ export function Read({ active }: { active: boolean }) {
   const speak = async (what: "text" | "summary", body: string, id = run.current) => {
     if (!body.trim()) return;
     setStep("speak");
-    const r = await fetch("/api/read/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: body, speed: Number(speed) }) });
-    if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${r.status}`);
-    const url = URL.createObjectURL(await r.blob());
+    const { url, rate } = await synthesize(body, voices.voice, Number(speed));
     if (id !== run.current) return URL.revokeObjectURL(url);
     setAudioUrl(url);
     setSpeaking(what);
     setStep("idle");
-    // play() needs the new src on the element first
-    requestAnimationFrame(() => audio.current?.play().catch(() => {}));
+    // play() needs the new src on the element first; loading it resets the rate to the default one
+    requestAnimationFrame(() => {
+      const a = audio.current;
+      if (!a) return;
+      a.defaultPlaybackRate = a.playbackRate = rate;
+      a.play().catch(() => {});
+    });
   };
 
   const summarizeAndSpeak = async (body: string, id = run.current) => {
@@ -164,6 +161,8 @@ export function Read({ active }: { active: boolean }) {
           </span>
         </div>
 
+        <ChangeVoice voices={voices} speed={Number(speed)} onTest={() => audio.current?.pause()} />
+
         <div className="text-sm text-dim">
           Press <kbd className="px-1 border border-line rounded">Ctrl</kbd>+<kbd className="px-1 border border-line rounded">V</kbd> on this tab to read a screenshot or copied text out loud, or type in the box below.
           {auto ? " With auto summarize on, you hear a short summary instead of the full text." : ""}
@@ -177,7 +176,7 @@ export function Read({ active }: { active: boolean }) {
         )}
 
         <div className={`flex items-center gap-2 ${audioUrl ? "" : "hidden"}`}>
-          <audio ref={audio} src={audioUrl} controls className="flex-1" onEnded={() => setSpeaking(undefined)} />
+          <audio ref={audio} src={audioUrl} controls className="flex-1" onPlay={stopVoiceTest} onEnded={() => setSpeaking(undefined)} />
           {speaking && <Badge>{speaking === "summary" ? "summary" : "full text"}</Badge>}
         </div>
 

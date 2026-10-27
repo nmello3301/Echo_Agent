@@ -19,9 +19,16 @@ export function effortFields(model: MainModel, effort: Effort): Record<string, u
   return { reasoning_effort: effort, chat_template_kwargs: { enable_thinking: true } };
 }
 
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
 export interface StreamResult {
   content: string;
   reasoning: string;
+  toolCalls: ToolCall[];
   timings?: Timings;
   ttftMs: number | null;
   finishReason?: string;
@@ -37,7 +44,7 @@ export async function streamChat(
   source: string,
 ): Promise<StreamResult> {
   const t0 = performance.now();
-  const res: StreamResult = { content: "", reasoning: "", ttftMs: null, aborted: false };
+  const res: StreamResult = { content: "", reasoning: "", toolCalls: [], ttftMs: null, aborted: false };
   const rate = new ArrivalRate();
   Object.assign(live, { active: true, source, decodeTps: null, ttftMs: null, generated: 0 });
   try {
@@ -82,6 +89,13 @@ export async function streamChat(
           const est = rate.tick();
           if (!j.timings && est) live.decodeTps = est;
           if (!j.timings) live.generated++;
+        }
+        // tool calls arrive in pieces: the id and name first, then the arguments a few characters at a time
+        for (const tc of delta.tool_calls ?? []) {
+          const t = (res.toolCalls[tc.index ?? 0] ??= { id: "", type: "function", function: { name: "", arguments: "" } });
+          if (tc.id) t.id = tc.id;
+          if (tc.function?.name) t.function.name = tc.function.name;
+          if (tc.function?.arguments) t.function.arguments += tc.function.arguments;
         }
         if (j.choices?.[0]?.finish_reason) res.finishReason = j.choices[0].finish_reason;
         if (j.timings) {

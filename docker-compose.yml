@@ -40,6 +40,7 @@ services:
       ECHO_HUGIN_URL: http://hugin-api:8088
       HUGIN_API_TOKEN: ${HUGIN_API_TOKEN}
       HUGIN_UI_PASSWORD: ${HUGIN_UI_PASSWORD}
+      HF_TOKEN: ${HF_TOKEN:-}   # optional: Read tab voice cloning (see .env.example)
       TZ: ${TZ:-UTC}
     ports:
       - "127.0.0.1:${ECHO_PORT:-7777}:7777"

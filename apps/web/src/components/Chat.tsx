@@ -15,6 +15,7 @@ export function Chat() {
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("low");
   const [useNotes, setUseNotes] = useState(false);
+  const [useWeb, setUseWeb] = useState(false);
   const [convs, setConvs] = useState<Conv[]>([]);
   const [search, setSearch] = useState("");
   const [convId, setConvId] = useState<string>();
@@ -55,7 +56,7 @@ export function Chat() {
     setBusy(true);
     setError("");
     try {
-      const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: convId, model, effort, content, notes: useNotes }) });
+      const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: convId, model, effort, content, notes: useNotes, web: useWeb }) });
       await readSSE(r, (ev, d) => {
         if (ev === "meta") {
           setConvId(d.conversationId);
@@ -135,6 +136,10 @@ export function Chat() {
             <input type="checkbox" checked={useNotes} onChange={(e) => setUseNotes(e.target.checked)} className="accent-[var(--color-accent)]" />
             Use my notes
           </label>
+          <label className="flex items-center gap-1.5 text-sm text-dim cursor-pointer select-none" title="Let the model search the web and read pages when it needs to, and cite them">
+            <input type="checkbox" checked={useWeb} onChange={(e) => setUseWeb(e.target.checked)} className="accent-[var(--color-accent)]" />
+            Search the web
+          </label>
           {status && <Badge tone="warn">{status}</Badge>}
         </header>
 
@@ -155,9 +160,14 @@ export function Chat() {
                     {m.reasoning && <Collapsible title={`Thinking (${m.reasoning.length} chars)`}><div className="text-xs text-dim whitespace-pre-wrap">{m.reasoning}</div></Collapsible>}
                     <Markdown text={textOf(m.content)} />
                     {busy && i === msgs.length - 1 && !textOf(m.content) && !m.reasoning && <span className="text-dim animate-pulse">…</span>}
+                    {m.stats?.searches?.length > 0 && (
+                      <div className="text-[11px] text-dim">Searched: {m.stats.searches.map((q: string) => `“${q}”`).join(" · ")}</div>
+                    )}
                     {m.stats?.sources?.length > 0 && (
                       <div className="text-[11px] text-dim space-y-0.5 border-l-2 border-line pl-2">
-                        {m.stats.sources.map((s: any, k: number) => (
+                        {m.stats.sources.map((s: any, k: number) => s.url ? (
+                          <div key={k} className="truncate">[{s.n}] <a href={s.url} target="_blank" rel="noreferrer" className="hover:text-text underline decoration-line">{s.title}</a> <span className="opacity-60">· {new URL(s.url).hostname}</span></div>
+                        ) : (
                           <div key={k}>[{k + 1}] {s.title} · {String(s.created).slice(0, 10)}{s.heading ? ` · ${s.heading}` : ""} <span className="opacity-60">({s.score.toFixed(2)})</span></div>
                         ))}
                       </div>

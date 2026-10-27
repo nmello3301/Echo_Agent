@@ -88,5 +88,13 @@ export function useModels() {
   return models;
 }
 
-export const fmtBytes = (b?: number | null) => (b == null ? "–" : b >= 1e9 ? `${(b / 1073741824).toFixed(1)} GB` : `${(b / 1048576).toFixed(0)} MB`);
+export const toDataUrl = (blob: Blob) =>
+  new Promise<string>((resolve, reject) => {
+    const rd = new FileReader();
+    rd.onload = () => resolve(rd.result as string);
+    rd.onerror = () => reject(rd.error);
+    rd.readAsDataURL(blob);
+  });
+
+export const fmtBytes =(b?: number | null) => (b == null ? "–" : b >= 1e9 ? `${(b / 1073741824).toFixed(1)} GB` : `${(b / 1048576).toFixed(0)} MB`);
 export const fmtNum = (n?: number | null, d = 1) => (n == null || Number.isNaN(n) ? "–" : n.toFixed(d));
