@@ -25,6 +25,31 @@ moves part of the model's GPU memory to system RAM under pressure. models.yaml n
 shared (was ~0.66 GB), the card 21.7 of 24 GB, and ~10K-token prompts read at 2,030-2,290 tok/s both right after
 loading and after 10 idle minutes (no stall). A trivial agent run (one grep, effort off) now takes 7.7 s.
 
+## Live tab: voice turns (2026-11-04)
+
+Measured in headless Edge with a WAV file as the microphone (5 spoken questions, a Piper voice), through the whole
+browser path: end-of-speech detection, early transcription, the turn, audio decoding and scheduling. **Delay** runs
+from the last voiced audio frame to the first sound of the answer, so it includes the 0.5 s pause Echo waits to be
+sure you have finished. Qwen3.8 27B at 64K, faster-whisper base.en on 8 CPU threads, Piper en_US-lessac-medium.
+
+| Question | Thinking off: delay | first word | Thinking low: delay | first word |
+| --- | ---: | ---: | ---: | ---: |
+| What is the capital of Australia? | 1.26 s | 461 ms | 8.18 s | 7,983 ms |
+| Three apples, eat one, buy five more: how many? | 1.44 s | 726 ms | 2.88 s | 2,237 ms |
+| Why is the sky blue? | 1.30 s | 397 ms | 2.46 s | 1,804 ms |
+| A kilogram of feathers or of steel: which is heavier? | 1.57 s | 827 ms | 2.86 s | 2,268 ms |
+| A quick tip for falling asleep faster | 1.57 s | 567 ms | 3.44 s | 2,887 ms |
+| **Median** | **1.44 s** | | **2.88 s** | |
+
+Both settings answered all five correctly (Canberra, seven, Rayleigh scattering, the same, the 4-7-8 breathing
+method); with thinking low the answers were a little richer and about twice as long. **Default: thinking off.**
+Where a 1.4 s turn goes: 0.5 s pause (speech to text, ~0.4 s, runs inside it), first word ~0.4-0.8 s, the first
+chunk's remaining words ~0.1 s, voice ~0.05-0.15 s, playback scheduling ~10 ms. Waking the model while the user
+speaks (`/api/live/prime`) took the first word from 0.8-1.0 s to ~0.45 s on a follow-up question.
+
+Speech to text alone (warm, 3 runs): base.en on 8 threads ~340 ms for a 1.4 s question and ~510 ms for 6.1 s;
+small.en ~890 / ~1,110 ms with the same words; 16 threads was slower than 8. Hugin's service: ~9.5 s per request.
+
 ## Laptop: RTX 3060 Laptop 6 GB
 
 Measured on this laptop (RTX 3060 Laptop 6 GB, Ryzen 7 4800H, 62 GiB RAM), on AC, 2026-10-03.
