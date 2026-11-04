@@ -5,6 +5,7 @@ import { Chat } from "./components/Chat.tsx";
 import { Decide } from "./components/Decide.tsx";
 import { Git } from "./components/Git.tsx";
 import { Hugin } from "./components/Hugin.tsx";
+import { Live } from "./components/Live.tsx";
 import { Models } from "./components/Models.tsx";
 import { Monitor } from "./components/Monitor.tsx";
 import { Read } from "./components/Read.tsx";
@@ -18,6 +19,7 @@ const TABS = [
   { id: "models", label: "Models", key: "5" },
   { id: "read", label: "Read", key: "6" },
   { id: "git", label: "Git", key: "7" },
+  { id: "live", label: "Live", key: "8" },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
 
@@ -45,7 +47,7 @@ function App() {
   }, [tab]);
   useEffect(() => save("echo.monitorCollapsed", monitorCollapsed), [monitorCollapsed]);
 
-  // Alt+1..7 switch tabs, Alt+M toggles the monitor
+  // Alt+1..8 switch tabs, Alt+M toggles the monitor
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (!e.altKey) return;
@@ -81,6 +83,7 @@ function App() {
           <div className={tab === "hugin" ? "h-full" : "hidden"}><Hugin /></div>
           <div className={tab === "read" ? "h-full" : "hidden"}><Read active={tab === "read"} /></div>
           <div className={tab === "git" ? "h-full" : "hidden"}><Git active={tab === "git"} /></div>
+          <div className={tab === "live" ? "h-full" : "hidden"}><Live active={tab === "live"} /></div>
           {tab === "models" && <Models />}
         </main>
         <aside className={`border-l border-line bg-panel shrink-0 ${monitorCollapsed ? "w-14" : "w-72"}`}>

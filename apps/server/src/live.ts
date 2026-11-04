@@ -206,6 +206,24 @@ liveApp.post("/warm", async (c) => {
   }
 });
 
+/** Called the moment the user starts speaking: the conversation so far goes through the model (1 token), which
+ *  wakes the GPU from its idle clocks and puts this session's history in the prompt cache. When the user stops,
+ *  only their new words are left to read: the first word comes sooner. */
+liveApp.post("/prime", async (c) => {
+  try {
+    const m = await mainModel();
+    const s = sessions.get(c.req.query("session") ?? "");
+    const t = performance.now();
+    await streamChat(m, {
+      messages: [{ role: "system", content: SYSTEM }, ...(s?.messages ?? []), { role: "user", content: "…" }],
+      ...effortFields(m, "off"), max_tokens: 1, cache_prompt: true,
+    }, () => {}, new AbortController().signal, "live");
+    return c.json({ ok: true, ms: Math.round(performance.now() - t) });
+  } catch (e) {
+    return c.json(err(e), 503);
+  }
+});
+
 liveApp.post("/reset", (c) => {
   sessions.delete(c.req.query("session") ?? "");
   return c.json({ ok: true });
