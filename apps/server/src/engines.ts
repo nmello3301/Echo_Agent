@@ -362,6 +362,25 @@ export function ttsSpec(): Spec {
   };
 }
 
+/** Live tab's speech to text: faster-whisper on the CPU (services/stt/server.py), the model kept loaded. */
+export function sttSpec(): Spec {
+  const port = config.echo.ports.stt ?? 8096;
+  const live = config.echo.live ?? {};
+  return {
+    id: "stt",
+    name: `Speech to text (faster-whisper ${live.stt_model ?? "base.en"})`,
+    role: "decision-server",
+    cmd: path.join(ROOT, "services/stt/.venv/bin/python"),
+    args: [path.join(ROOT, "services/stt/server.py"), "--port", String(port), "--model", live.stt_model ?? "base.en",
+      "--threads", String(live.stt_threads ?? 8), "--models-dir", abs("models/stt")],
+    healthUrl: `http://127.0.0.1:${port}/health`,
+  };
+}
+
+export async function startStt(): Promise<void> {
+  await get(sttSpec()).start();
+}
+
 export async function startTts(): Promise<void> {
   await get(ttsSpec()).start();
 }

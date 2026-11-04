@@ -340,6 +340,23 @@ describe("self-work", () => {
   });
 });
 
+describe("live chat", () => {
+  test("the first spoken chunk may end at a clause break, later ones at sentence ends", async () => {
+    const { Chunker } = await import("../src/live.ts");
+    const c = new Chunker();
+    const out: string[] = [];
+    for (const piece of "Sure, it will be sunny tomorrow, with a high of twenty. Bring a jacket though! It may get windy".match(/.{1,7}/g)!) out.push(...c.push(piece));
+    assert.deepEqual(out, ["Sure, it will be sunny tomorrow,", "with a high of twenty.", "Bring a jacket though!"], "'Sure,' alone is too short to speak first");
+    assert.equal(c.flush(), "It may get windy");
+    assert.deepEqual(new Chunker().push("Pi is 3.14 exactly. "), ["Pi is 3.14 exactly."], "a decimal point is not a sentence end");
+  });
+
+  test("text is spoken without markdown, links or symbols", async () => {
+    const { speakable } = await import("../src/live.ts");
+    assert.equal(speakable("**Yes** — see https://x.y/z for `code` & more:\n- one\n- two"), "Yes — see a link for code and more: one two");
+  });
+});
+
 describe("context", () => {
   test("compaction keeps a quarter of the window and leaves room for a full turn", async () => {
     const { compactionSettings } = await import("../src/agent.ts");

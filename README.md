@@ -159,6 +159,18 @@ The model files are already in `models/strata/models/IQ2_XS/`. Setup writes `run
 
 Both reload when saved.
 
+## Live tab: talk to Echo
+
+Press **Start** and talk; when you pause, Echo answers out loud and listens again. Follow-up questions work. The
+first sound of the answer comes ~1.3-1.6 s after you stop talking (median 1.44 s, half of it the pause Echo waits
+to be sure you have finished; pick 0.4, 0.5 or 0.7 s). **Thinking off** answers soonest; **thinking low** thinks
+first (better on hard questions, ~1.5 s+ slower). **Interrupt** stops it mid-answer, **New conversation** forgets
+the conversation. Each turn shows its delay and where the time went.
+
+Speech to text is Echo's own (`services/stt`: faster-whisper `base.en` on 8 CPU threads, ~0.35 s for a short
+question; its weights, ~145 MB, download into `models/stt/` on first use); the voices are the Read tab's Piper
+voices. Settings: `live` in `echo.yaml`. English only for now. Details: [docs/live-chat.md](docs/live-chat.md).
+
 ## Git tab
 
 A branch graph (branches, merges, tags; click a commit for its diff) of every git repository in the folders under

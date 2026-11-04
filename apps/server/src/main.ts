@@ -13,9 +13,10 @@ import { config, dockerEnv, ROOT } from "./config.ts";
 import { db, now } from "./db.ts";
 import { decisions, type Questions } from "./decision.ts";
 import { buildStrata, cancelDownload, catalogStatus, startDownload } from "./downloads.ts";
-import { activeMain, activeMainId, allEngines, engineById, huginEnv, startDecision, startHugin, startRag, startSearch, startTts, stopAll, useMainModel } from "./engines.ts";
+import { activeMain, activeMainId, allEngines, engineById, huginEnv, startDecision, startHugin, startRag, startSearch, startStt, startTts, stopAll, useMainModel } from "./engines.ts";
 import { gitApp } from "./gitview.ts";
 import { type Effort, effortFields, type StreamResult, streamChat } from "./llm.ts";
+import { liveApp } from "./live.ts";
 import { lastSample, startMonitor } from "./monitor.ts";
 import { formatSources, indexStatus, listNotes, readNote, searchNotes, startIndexer, syncIndex } from "./rag.ts";
 import { dev, isDevHost, linkCheckout, proxyHttp, proxyUpgrade, verify, type VerifyStep } from "./selfdev.ts";
@@ -478,6 +479,9 @@ app.delete("/api/read/voices/:id", async (c) => {
   }
 });
 
+// ---------- Live tab: hands-free voice chat (live.ts) ----------
+app.route("/api/live", liveApp);
+
 app.get("/api/rules", (c) => c.json({ path: path.join(ROOT, "rules.md"), text: readFileSync(path.join(ROOT, "rules.md"), "utf8") }));
 
 // ---------- Git tab: branch graphs and GitHub pull requests (gitview.ts) ----------
@@ -552,6 +556,7 @@ startSearch().catch((e) => console.error("[search]", e.message));
 startRag().then(() => startIndexer()).catch((e) => console.error("[rag]", e.message));
 startHugin().catch((e) => console.error("[hugin]", e.message));
 startTts().catch((e) => console.error("[tts]", e.message));
+startStt().catch((e) => console.error("[stt]", e.message));
 useMainModel(process.env.ECHO_MODEL ?? config.echo.default_model).catch((e) => console.error("[engines]", e.message));
 
 let shuttingDown = false;
