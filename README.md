@@ -159,6 +159,18 @@ The model files are already in `models/strata/models/IQ2_XS/`. Setup writes `run
 
 Both reload when saved.
 
+## Git tab
+
+A branch graph (branches, merges, tags; click a commit for its diff) of every git repository in the folders under
+`git.dirs` in `echo.yaml` (your projects folder, including the agent's working copy of Echo, which updates as it
+commits), and of the GitHub repositories under `git.github`, mirrored into `data/git/`. For those, **Pull requests**
+lists the open ones with their description, commits and full diff, and merges (merge commit, squash or rebase) or
+closes them. A merge is pinned to the commit you reviewed: if the branch moved since, GitHub refuses it.
+
+Reading a public repository needs nothing. Merging and closing need a GitHub token: a fine-grained token
+(github.com/settings/personal-access-tokens) for the repository with *Pull requests* and *Contents* set to *Read and
+write*, as `GITHUB_TOKEN=` in `.env`, then `docker compose up -d`. The token stays on the server.
+
 ## SDK and self-work
 
 `sdk/` drives the agent from scripts and the terminal (`node sdk/cli.ts help`), and runs the self-work loop where

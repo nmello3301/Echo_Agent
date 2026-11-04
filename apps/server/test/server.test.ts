@@ -340,6 +340,107 @@ describe("self-work", () => {
   });
 });
 
+describe("context", () => {
+  test("compaction keeps a quarter of the window and leaves room for a full turn", async () => {
+    const { compactionSettings } = await import("../src/agent.ts");
+    assert.deepEqual(compactionSettings(32768), { reserveTokens: 10240, keepRecentTokens: 8192 }, "the old 32K behaviour");
+    assert.deepEqual(compactionSettings(65536), { reserveTokens: 10486, keepRecentTokens: 16384 });
+    const s = compactionSettings(24576); // Strata's window
+    assert.ok(s.reserveTokens >= 8192 + 1024 && s.keepRecentTokens < 24576 - s.reserveTokens);
+  });
+});
+
+describe("TLDR for requests", () => {
+  const base = {
+    task: "Add a Live chat mode to Echo", plan: [{ text: "STT endpoint", status: "in_progress" }, { text: "Live tab", status: "pending" }],
+    recent: [{ tool: "echo_dev_request", args: "POST /api/live/stt", result: "502 fetch failed (connect ECONNREFUSED 127.0.0.1:8089)", error: false }],
+    messages: ["STT isn't exposed on the host."], stepBudget: 16,
+  };
+
+  test("a needs-you request: the trigger, the concrete error, and what each answer really does, revert included", async () => {
+    const { explainPrompt } = await import("../src/agent.ts");
+    const p = explainPrompt({
+      ...base,
+      request: { kind: "hitl", ts: 0, id: "h1", probability: 0.54, next: "revert", progress: "steady", trigger: "step budget (16 tool calls)", options: [] },
+      checkpoint: { sha: "4e2f6281234", label: "before edits (4)" }, undo: " apps/server/src/main.ts | 12 ++++++------\n 1 file changed",
+    });
+    assert.match(p, /ECONNREFUSED 127\.0\.0\.1:8089/);
+    assert.match(p, /next step "revert", progress "steady", probability that a human is needed 0\.54/);
+    assert.match(p, /every 16 tool calls/);
+    assert.match(p, /- revert: the working folder goes back to checkpoint 4e2f6281 \("before edits \(4\)"\), undoing these changes:\napps\/server\/src\/main\.ts \| 12/);
+    assert.match(p, /- re-plan: .*new plan/);
+    assert.match(p, /\[now\] STT endpoint/);
+    assert.match(p, /at most 120 words/);
+  });
+
+  test("an approval request: the command, why Echo asks, and that approving runs it outside the sandbox", async () => {
+    const { explainPrompt } = await import("../src/agent.ts");
+    const p = explainPrompt({ ...base, request: { kind: "approval", ts: 0, id: "a1", action: "git push origin main", reason: "pushing main", rule: "always-ask", decision: { noul: 0.31 } }, undo: "" });
+    assert.match(p, /wants to run: git push origin main/);
+    assert.match(p, /because: pushing main \(the user's rule "always-ask"\)/);
+    assert.match(p, /probability 0\.31/);
+    assert.match(p, /approve: the command runs \(outside the sandbox\)/);
+    assert.doesNotMatch(p, /- revert:/);
+  });
+});
+
+describe("git tab", () => {
+  test("refs: local branches with slashes, remote branches, tags and pull requests", async () => {
+    const { parseRefs } = await import("../src/gitview.ts");
+    assert.deepEqual(parseRefs("HEAD -> main, origin/main, origin/HEAD, feat/live-chat, tag: v1.0, refs/pull/3/head", ["origin"]), [
+      { name: "HEAD", kind: "head" }, { name: "main", kind: "branch" }, { name: "origin/main", kind: "remote" },
+      { name: "feat/live-chat", kind: "branch" }, { name: "v1.0", kind: "tag" }, { name: "#3", kind: "pr" },
+    ]);
+  });
+
+  test("the graph shows branches and merges but not the agent's checkpoints; a merge's diff is what it brought in", async () => {
+    const { commitDetail, graph, localRepos } = await import("../src/gitview.ts");
+    const parent = mkdtempSync(path.join(tmp, "projects-"));
+    const dir = path.join(parent, "proj");
+    mkdirSync(dir);
+    const g = (...a: string[]) => execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@t", ...a], { cwd: dir, encoding: "utf8" }).trim();
+    g("init", "-q", "-b", "main");
+    writeFileSync(path.join(dir, "a.txt"), "a\n");
+    g("add", "-A");
+    g("commit", "-qm", "A");
+    g("switch", "-qc", "feat/x");
+    writeFileSync(path.join(dir, "b.txt"), "b\n");
+    g("add", "-A");
+    g("commit", "-qm", "B on feat/x");
+    g("switch", "-q", "main");
+    writeFileSync(path.join(dir, "c.txt"), "c\n");
+    g("add", "-A");
+    g("commit", "-qm", "C");
+    g("merge", "-q", "--no-ff", "-m", "Merge feat/x", "feat/x");
+    // an agent checkpoint: a commit kept under refs/echo/, on no branch
+    const tree = g("write-tree");
+    const checkpoint = g("commit-tree", tree, "-m", "checkpoint");
+    g("update-ref", "refs/echo/run/0", checkpoint);
+
+    const repos = localRepos([parent]);
+    assert.deepEqual(repos.map((r) => r.name), ["proj"]);
+    const out = await graph(repos[0], 50);
+    assert.deepEqual(out.commits.map((c) => c.subject), ["Merge feat/x", "C", "B on feat/x", "A"]);
+    assert.ok(!out.commits.some((c) => c.sha === checkpoint), "checkpoints stay out of the graph");
+    assert.equal(out.commits[0].parents.length, 2);
+    assert.deepEqual(out.commits[0].refs.map((r) => r.name), ["HEAD", "main"]);
+    assert.equal(out.head, "main");
+    assert.deepEqual([...out.branches].sort(), ["feat/x", "main"]);
+    const merge = await commitDetail(repos[0], out.commits[0].sha);
+    assert.deepEqual(merge.files.map((f) => f.path), ["b.txt"]);
+    assert.match(merge.patch, /\+b/);
+    const root = await commitDetail(repos[0], out.commits[3].sha);
+    assert.deepEqual(root.files.map((f) => f.path), ["a.txt"]);
+    await assert.rejects(commitDetail(repos[0], "not-a-sha"), /not a commit/);
+  });
+
+  test("only listed repositories can be read: an id is never taken as a path", async () => {
+    const { repoById } = await import("../src/gitview.ts");
+    assert.throws(() => repoById("local:/etc"), /unknown repository/);
+    assert.throws(() => repoById("gh:someone/else"), /unknown repository/);
+  });
+});
+
 describe("notes RAG", () => {
   test("Hugin notes parse: front matter, title, date, tags", async () => {
     const { parseNote, chunkNote } = await import("../src/rag.ts");

@@ -24,6 +24,7 @@ import { db, now } from "./db.ts";
 import { type Answer, decisions, type Questions } from "./decision.ts";
 import { activeMain, useMainModel } from "./engines.ts";
 import { checkpoint, diffSince, diffStat, initRepo, isRepo, revertTo } from "./git.ts";
+import { effortFields, streamChat } from "./llm.ts";
 import { echoCheckout } from "./selfdev.ts";
 import { echoDevTools } from "./tools/echodev.ts";
 import { DEFERRED_HINT, echoTools } from "./tools/index.ts";
@@ -104,6 +105,79 @@ function resultText(result: any): string {
   const c = result?.content;
   if (Array.isArray(c)) return c.map((x: any) => (x.type === "text" ? x.text : `[${x.type}]`)).join("\n");
   return typeof result === "string" ? result : JSON.stringify(result ?? "");
+}
+
+/** When Pi compacts (reserve: the context left free) and how much recent conversation it keeps word for word.
+ *  Pi's defaults (reserve 16384, keep 20000) suit large windows; with 24K they would compact at 8K and keep more than
+ *  fits. Keeping a quarter of the window: at 32K a compacted run had only 8-12K of room left and compacted every
+ *  ~2 minutes; at 64K it has ~30K. The reserve covers one full turn (maxTokens 8192) plus slack. */
+export function compactionSettings(context: number) {
+  return { reserveTokens: Math.max(10240, Math.round(context * 0.16)), keepRecentTokens: Math.round(context / 4) };
+}
+
+export interface ExplainInput {
+  task: string;
+  instruction?: string;
+  plan: { text: string; status: string }[];
+  /** The hitl or approval event */
+  request: TimelineEvent;
+  recent: { tool: string; args: string; result: string; error: boolean }[];
+  messages: string[];
+  checkpoint?: { sha: string; label: string };
+  /** git diff --stat since that checkpoint: what "revert" would undo */
+  undo: string;
+  stepBudget: number;
+}
+
+/** The facts behind a request, with what each answer really does, for the model to explain to the user. */
+export function explainPrompt(x: ExplainInput): string {
+  const r = x.request as Record<string, any>;
+  const plan = x.plan.length ? x.plan.map((t) => `${t.status === "done" ? "[done]" : t.status === "in_progress" ? "[now]" : "[todo]"} ${t.text}`).join("\n") : "(no plan written)";
+  const recent = x.recent.length ? x.recent.map((t) => `- ${t.tool} ${t.args} → ${t.error ? "ERROR: " : ""}${t.result.replace(/\s+/g, " ")}`).join("\n") : "(none yet)";
+  let request: string;
+  if (r.kind === "hitl") {
+    const revert = x.checkpoint
+      ? `the working folder goes back to checkpoint ${x.checkpoint.sha.slice(0, 8)} ("${x.checkpoint.label}"), undoing ${x.undo.trim() ? `these changes:\n${x.undo.trim()}` : "nothing (no changes since then)"}\n  and the agent is told to take a different approach`
+      : "there is no checkpoint yet, so nothing is undone; the agent is only told to undo its changes itself";
+    request = [
+      `Decision time (a small model that reviews the agent's work every ${x.stepBudget} tool calls, before risky commands and when the agent asks for a check) paused the run and asks the user.`,
+      `Its judgement: next step "${r.next ?? "?"}", progress "${r.progress ?? "?"}", probability that a human is needed ${Number(r.probability ?? 0).toFixed(2)} (it asks above 0.5).`,
+      r.trigger ? `What triggered the review: ${r.trigger}.` : "",
+      r.queued?.length ? `A command is waiting to run: ${r.queued.join("; ")}.` : "",
+      "The user's choices:",
+      "- continue: the agent carries on as it was.",
+      "- re-plan: the agent is told its approach is not working and must write a new plan before going on.",
+      `- revert: ${revert}.`,
+      "- stop: the run ends; its changes so far stay in the folder.",
+      "- or type an instruction, which the agent follows.",
+    ].filter(Boolean).join("\n");
+  } else {
+    request = [
+      `The agent wants to run: ${r.action}`,
+      `Echo asks first because: ${r.reason}${r.rule ? ` (the user's rule "${r.rule}")` : ""}.`,
+      r.decision?.noul !== undefined ? `Decision time rated it safe and needed with probability ${Number(r.decision.noul).toFixed(2)}.` : "",
+      "The user's choices:",
+      "- approve: the command runs (outside the sandbox).",
+      "- refuse: it does not run and the agent is told; a typed reason is passed on.",
+      r.folder ? `- always allow ${r.folder}: approve, and writing in that folder never asks again.` : "",
+    ].filter(Boolean).join("\n");
+  }
+  return [
+    "Echo's coding agent is waiting for its user to answer a request. Explain the context to the user.",
+    "",
+    `Task: ${x.task.slice(0, 800)}`,
+    x.instruction ? `Latest instruction from the user: ${x.instruction.slice(0, 400)}` : "",
+    `Plan:\n${plan}`,
+    `The agent's last tool calls, oldest first:\n${recent}`,
+    x.messages.length ? `The agent's last words:\n${x.messages.map((m) => `"${m.slice(0, 300)}"`).join("\n")}` : "",
+    "",
+    `The request:\n${request}`,
+    "",
+    "Write a TLDR of at most 120 words, as 3 to 5 short bullets: what the agent is working on; what happened that led to this request " +
+      "(name the concrete error or result); what the main choices would do here; and the choice you would make, with one reason " +
+      "(say so if the facts above are not enough). Use only the facts above: do not claim progress or results they do not show. " +
+      "Plain words, no preamble, no headings.",
+  ].filter((l) => l !== "").join("\n");
 }
 
 function notify(title: string, body: string) {
@@ -237,6 +311,44 @@ export class AgentRun {
     return removed;
   }
 
+  /** "revert" from a needs-you card: back to the last checkpoint (taken before the latest batch of edits), and
+   *  what to tell the agent about it. */
+  private async revertLastBatch(): Promise<string> {
+    const cp = this.checkpoints.at(-1);
+    if (!cp) return "The user asked to revert, but there is no checkpoint yet: undo your recent changes yourself and take a different approach.";
+    const removed = await this.revert(cp.sha);
+    return `The user reverted the working folder to checkpoint ${cp.sha.slice(0, 8)} (${cp.label}): your edits since then are undone` +
+      `${removed.length ? ` and the files you created since were deleted (${removed.join(", ")})` : ""}. ` +
+      "Re-read a file before editing it again, and take a different approach.";
+  }
+
+  // ---------- TLDR for a pending request ----------
+  private explanations = new Map<string, string>();
+
+  /** A short explanation of a needs-you or approval request, written by the main model from the run's recent
+   *  history (it is idle while the run waits). Cached per request. */
+  async explain(requestId: string): Promise<string> {
+    const cached = this.explanations.get(requestId);
+    if (cached) return cached;
+    const req = this.events.find((e) => (e.kind === "hitl" || e.kind === "approval") && e.id === requestId);
+    if (!req) throw new Error("no such request in this run");
+    const cp = this.checkpoints.at(-1);
+    const undo = cp ? await diffStat(this.cwd, cp.sha).catch(() => "") : "";
+    const messages = this.events.filter((e) => e.kind === "message" && e.text && e.ts <= req.ts).slice(-3).map((e) => String(e.text));
+    const prompt = explainPrompt({
+      task: this.task, instruction: this.instruction !== this.task ? this.instruction : undefined, plan: this.todo,
+      request: req, recent: this.recent.slice(-12).map((r) => ({ tool: r.name, args: short(r.args, 200), result: short(r.result ?? "", 300), error: !!r.isError })),
+      messages, checkpoint: cp, undo, stepBudget: this.stepBudget,
+    });
+    const m = this.model ?? activeMain()?.model;
+    if (!m) throw new Error("no model is loaded");
+    const res = await streamChat(m, { messages: [{ role: "user", content: prompt }], ...effortFields(m, "off"), max_tokens: 500 }, () => {}, new AbortController().signal, "explain");
+    const text = res.content.trim();
+    if (!text) throw new Error("the model returned nothing; try again");
+    this.explanations.set(requestId, text);
+    return text;
+  }
+
   // ---------- human interaction ----------
   waitFor(kind: "hitl" | "approval", data: Record<string, unknown>): Promise<{ approved?: boolean; reply?: string; remember?: boolean }> {
     const id = randomUUID();
@@ -325,7 +437,7 @@ export class AgentRun {
   }
 
   /** Apply decision answers; returns guidance for the model (undefined = continue silently). */
-  private async apply(d: { answers: Record<string, Answer>; latency: number }, queued: { cmd: string }[] = []) {
+  private async apply(d: { answers: Record<string, Answer>; latency: number; state?: { trigger?: string } }, queued: { cmd: string }[] = []) {
     const a = d.answers;
     const pick = (ans: Answer | undefined) => {
       const probs = ans?.probabilities ?? {};
@@ -361,7 +473,10 @@ export class AgentRun {
       ].filter(Boolean).join(", ");
       const summary = `Needs you (p=${pHuman.toFixed(2)}). ${why || "The agent is unsure how to proceed."}`;
       notify("Echo needs you", `${this.task.slice(0, 80)}\n${summary}`);
-      const r = await this.waitFor("hitl", { probability: pHuman, summary, options: ["continue", "re-plan", "revert", "stop"] });
+      const r = await this.waitFor("hitl", {
+        probability: pHuman, summary, options: ["continue", "re-plan", "revert", "stop"],
+        next, progress, trigger: d.state?.trigger, queued: queued.map((x) => x.cmd),
+      });
       human = (r.reply ?? "").trim();
       const row = db.prepare("INSERT INTO hitl (run_id, probability, summary, reply, created_at) VALUES (?,?,?,?,?)")
         .run(this.id, pHuman, summary, human, now());
@@ -373,9 +488,14 @@ export class AgentRun {
         return { block: true, text: "The user stopped the run.", unsafe: queued.map(() => true), stopped: true, human };
       }
       if (word === "continue") next = "continue";
-      else if (word === "re-plan" || word === "replan") next = "replan";
-      else if (word === "revert") next = "revert";
-      else {
+      else if (word === "re-plan" || word === "replan") {
+        next = "replan";
+        guidance.push("The user asked you to re-plan: your current approach is not working. Step back, look at what failed, " +
+          "write a new plan with the todo tool, then continue with it.");
+      } else if (word === "revert") {
+        next = "revert";
+        guidance.push(await this.revertLastBatch());
+      } else {
         next = "continue";
         guidance.push(`The user replied: "${human}". Follow it.`);
       }
@@ -524,9 +644,7 @@ export class AgentRun {
       const settingsManager = SettingsManager.inMemory({
         enableInstallTelemetry: false,
         defaultTools: ["read", "edit", "write", "grep", "find", "ls", "bash", "tool_search"],
-        // Pi's defaults (reserve 16384, keep 20000) suit big windows; with Strata's 24K they would compact at 8K
-        // and keep more than fits. Reserve covers one full turn (maxTokens 8192) plus slack.
-        compaction: { enabled: true, reserveTokens: 10240, keepRecentTokens: 8000 },
+        compaction: { enabled: true, ...compactionSettings(m.context ?? 32768) },
         retry: { enabled: true, maxRetries: 1 },
       } as any);
       const resourceLoader = new DefaultResourceLoader({
@@ -538,6 +656,9 @@ export class AgentRun {
           `# The user's rules (rules.md)\n\n${this.rules.text}`,
           ...(this.selfCheckout ? [SELF_WORK] : []),
           ...(this.opts.instructions ? [`# Instructions for this run\n\n${this.opts.instructions}`] : []),
+          // The task is also the first message, but compaction summarizes older messages, the task among them: here
+          // its phases and constraints stay word for word for the whole run.
+          `# Your task\n\nThe user's task, kept here because older messages get summarized:\n\n${this.task}`,
         ],
         extensionFactories: [this.extension, createToolSearchExtension()],
       });

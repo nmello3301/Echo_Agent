@@ -49,7 +49,7 @@ function linkTargets(): string[] {
   return rels;
 }
 // A symlink is not a folder to git, so .gitignore's "node_modules/" would not hide it
-const EXCLUDES = ["/node_modules", "/models", "/vendor/llama.cpp", "services/*/.venv", "/data", "apps/web/node_modules", "/.echo"];
+const EXCLUDES = ["/node_modules", "/models", "/vendor/llama.cpp", "services/*/.venv", "/data", "apps/web/node_modules", "/.echo", "/.tmp"];
 
 export interface LinkReport {
   dir: string;

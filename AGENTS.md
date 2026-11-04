@@ -2,8 +2,14 @@
 
 Echo is a local agent platform: one Node server (Hono; TypeScript run directly by Node, no build step) that serves a
 React UI (Vite + Tailwind) and manages engines (llama.cpp `llama-server`) and Python services. It runs in Docker on
-Windows: RTX 4090 (24 GB), 16 CPU threads, 31 GB RAM in the container. This file is loaded into every agent run in
-this folder: read it instead of exploring.
+Windows: RTX 4090 (24 GB), 16 CPU threads, 31 GB RAM in the container. This file is already in your context in every
+run in this folder: never read it with a tool, and use it instead of exploring.
+
+**Context is your scarcest resource.** Never read a whole large file: `agent.ts` (~800 lines), `main.ts` (~570),
+`Git.tsx` (~550), `engines.ts` (~420), `Agent.tsx` (~400), `gitview.ts` (~390), `selfdev.ts` (~360) and
+`services/tts/server.py` (~300) each fill a large part of it. grep for the function or route first, then read that
+range (offset/limit). Put new features in their own files (a route module mounted with `app.route(...)`, like
+gitview.ts) rather than growing main.ts.
 
 ## Layout
 

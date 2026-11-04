@@ -10,7 +10,9 @@ main:
     base_url: http://127.0.0.1:8081/v1
     model: models/qwen27b/Qwen3.8-27B-UD-Q4_K_M.gguf
     mmproj: models/qwen27b/mmproj-F16.gguf
-    context: 32768
+    # 64K: at 32K a long agent run compacted every ~2 minutes and lost track (2026-11-04). The model is a hybrid with
+    # 16 attention layers, so the 8-bit KV cache costs only ~1 GiB per 32K.
+    context: 65536
     # gpu_layers unset: llama-server's --fit picks the layers that fit (1 GiB VRAM margin)
     draft: models/qwen27b/mtp-Qwen3.8-27B-Q4_0.gguf   # MTP head for speculative decoding
     threads: 8

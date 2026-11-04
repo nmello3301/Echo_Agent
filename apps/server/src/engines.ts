@@ -45,7 +45,8 @@ export class Engine {
   }
 
   private append(chunk: Buffer) {
-    this.file?.write(chunk);
+    // output can still arrive after the process exited and its log was closed
+    if (this.file && !this.file.writableEnded) this.file.write(chunk);
     for (const line of chunk.toString().split("\n")) {
       if (!line.trim()) continue;
       this.log.push(line);
@@ -74,6 +75,7 @@ export class Engine {
     const logs = abs(path.join(config.echo.paths.data, "logs"));
     mkdirSync(logs, { recursive: true });
     this.file = createWriteStream(path.join(logs, `${this.spec.id}.log`), { flags: "a" });
+    this.file.on("error", (e) => console.error(`[engines] ${this.spec.id} log: ${e.message}`));
     this.append(Buffer.from(`[echo] starting: ${this.spec.cmd} ${this.spec.args.join(" ")}\n`));
     this.stopping = false;
     this.startedAt = Date.now();
@@ -88,9 +90,11 @@ export class Engine {
     this.proc.stdout?.on("data", (b: Buffer) => this.append(b));
     this.proc.stderr?.on("data", (b: Buffer) => this.append(b));
     this.proc.on("error", (e) => this.set("error", e.message));
+    // close the log once the output has drained ("close"), not at "exit": the last lines, often the error, come after
+    const file = this.file;
+    this.proc.on("close", () => file.end());
     this.proc.on("exit", (code, signal) => {
       this.proc = undefined;
-      this.file?.end();
       if (this.stopping) this.set("stopped");
       else this.set("error", `exited (code ${code ?? "-"}, signal ${signal ?? "-"}); see its log`);
     });

@@ -14,6 +14,7 @@ import { db, now } from "./db.ts";
 import { decisions, type Questions } from "./decision.ts";
 import { buildStrata, cancelDownload, catalogStatus, startDownload } from "./downloads.ts";
 import { activeMain, activeMainId, allEngines, engineById, huginEnv, startDecision, startHugin, startRag, startSearch, startTts, stopAll, useMainModel } from "./engines.ts";
+import { gitApp } from "./gitview.ts";
 import { type Effort, effortFields, type StreamResult, streamChat } from "./llm.ts";
 import { sttUrl, transcribe } from "./live.ts";
 import { lastSample, startMonitor } from "./monitor.ts";
@@ -274,6 +275,15 @@ app.post("/api/agent/runs/:id/answer", async (c) => {
     return c.json(err(e), 400);
   }
 });
+/** A TLDR of what a pending needs-you or approval request is about, written by the main model. */
+app.post("/api/agent/runs/:id/explain", async (c) => {
+  try {
+    const { requestId } = await c.req.json<{ requestId: string }>();
+    return c.json({ text: await run(c.req.param("id")).explain(requestId) });
+  } catch (e) {
+    return c.json(err(e), 400);
+  }
+});
 app.post("/api/agent/runs/:id/stop", async (c) => {
   await runs.get(c.req.param("id"))?.stop();
   return c.json({ ok: true });
@@ -497,6 +507,9 @@ app.post("/api/live/stt", async (c) => {
 });
 
 app.get("/api/rules", (c) => c.json({ path: path.join(ROOT, "rules.md"), text: readFileSync(path.join(ROOT, "rules.md"), "utf8") }));
+
+// ---------- Git tab: branch graphs and GitHub pull requests (gitview.ts) ----------
+app.route("/api/git", gitApp);
 
 // ---------- self-work: the agent on a working copy of Echo (selfdev.ts) ----------
 app.post("/api/self/link", async (c) => {

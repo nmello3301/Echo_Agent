@@ -352,6 +352,11 @@ export class Run {
     return this.echo.request("POST", `/api/agent/runs/${this.id}/answer`, { pendingId, ...v });
   }
 
+  /** A short explanation of an approval or needs-you request: what led to it and what each answer would do. */
+  async explain(requestId: string): Promise<string> {
+    return (await this.echo.request<{ text: string }>("POST", `/api/agent/runs/${this.id}/explain`, { requestId })).text;
+  }
+
   stop() {
     return this.echo.request("POST", `/api/agent/runs/${this.id}/stop`, {});
   }

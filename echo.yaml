@@ -18,7 +18,7 @@ paths:
 default_model: qwen3.8-27b
 
 agent:
-  step_budget: 8              # tool calls per action time before a checkpoint
+  step_budget: 16             # tool calls per action time before a checkpoint (decision time costs ~25 s on the 4090)
   default_effort: low
   sandbox: true               # run the agent's bash inside bubblewrap
   network: false              # network inside the sandbox
@@ -46,3 +46,12 @@ stt_url: "http://stt:8089"  # Hugin's STT service, on the compose network
 
 monitor:
   interval_ms: 1000
+
+# Git tab: branch graphs of the git repositories in these folders (the folder itself, or its direct subfolders), and
+# of these GitHub repositories with their pull requests. Merging needs GITHUB_TOKEN in .env (see .env.example).
+git:
+  dirs:
+    - /projects       # Docker: your PROJECTS_DIR
+    - ~/Projects      # native
+  github:
+    - nmello3301/Echo_Agent

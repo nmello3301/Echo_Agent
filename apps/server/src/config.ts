@@ -61,6 +61,8 @@ export interface EchoConfig {
   notes: { dirs: string[]; hugin_dir: string };
   /** Hugin's speech-to-text service (faster-whisper, distil-large-v3 int8 on CPU). */
   stt_url?: string;
+  /** Git tab: folders whose git repositories it shows, and GitHub repositories ("owner/name") for pull requests */
+  git?: { dirs?: string[]; github?: string[] };
 }
 
 export interface ModelsConfig {
