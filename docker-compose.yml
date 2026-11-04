@@ -37,6 +37,7 @@ services:
       ECHO_HOST: 0.0.0.0
       ECHO_EXTERNAL_SERVICES: "1"
       ECHO_SEARCH_URL: http://searxng:8080
+      STT_URL: http://stt:8089
       ECHO_HUGIN_URL: http://hugin-api:8088
       HUGIN_API_TOKEN: ${HUGIN_API_TOKEN}
       HUGIN_UI_PASSWORD: ${HUGIN_UI_PASSWORD}

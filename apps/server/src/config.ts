@@ -59,6 +59,8 @@ export interface EchoConfig {
   notify: { desktop: boolean; ntfy_url: string };
   monitor: { interval_ms: number };
   notes: { dirs: string[]; hugin_dir: string };
+  /** Hugin's speech-to-text service (faster-whisper, distil-large-v3 int8 on CPU). */
+  stt_url?: string;
 }
 
 export interface ModelsConfig {
@@ -98,6 +100,7 @@ export const dockerEnv = {
   externalServices: process.env.ECHO_EXTERNAL_SERVICES === "1",
   searchUrl: process.env.ECHO_SEARCH_URL,
   huginUrl: process.env.ECHO_HUGIN_URL,
+  sttUrl: process.env.STT_URL,
 };
 
 export function abs(p: string): string {
