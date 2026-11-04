@@ -21,7 +21,9 @@ in f16, ~2 GiB at 32K.
 shared system memory; dwm and Firefox ~1.5 GB each). The first long prompt after a quiet spell then read at 50-66
 tok/s (a 30K prompt took 574 s, a 5K agent prompt 74 s) and the same prompt right after at 2,190 tok/s: Windows
 moves part of the model's GPU memory to system RAM under pressure. models.yaml now sets `kv_cache: q8_0` and
-`mmproj_on_cpu: true` for the 27B (~2 GB freed); re-measure after the next model start.
+`mmproj_on_cpu: true` for the 27B. After the restart: the WSL VM uses 18.4 GB of VRAM (was 20.2 GB) with ~0.3 GB
+shared (was ~0.66 GB), the card 21.7 of 24 GB, and ~10K-token prompts read at 2,030-2,290 tok/s both right after
+loading and after 10 idle minutes (no stall). A trivial agent run (one grep, effort off) now takes 7.7 s.
 
 ## Laptop: RTX 3060 Laptop 6 GB
 
