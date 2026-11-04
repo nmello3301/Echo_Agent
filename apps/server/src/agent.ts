@@ -107,6 +107,14 @@ function resultText(result: any): string {
   return typeof result === "string" ? result : JSON.stringify(result ?? "");
 }
 
+/** When Pi compacts (reserve: the context left free) and how much recent conversation it keeps word for word.
+ *  Pi's defaults (reserve 16384, keep 20000) suit large windows; with 24K they would compact at 8K and keep more than
+ *  fits. Keeping a quarter of the window: at 32K a compacted run had only 8-12K of room left and compacted every
+ *  ~2 minutes; at 64K it has ~30K. The reserve covers one full turn (maxTokens 8192) plus slack. */
+export function compactionSettings(context: number) {
+  return { reserveTokens: Math.max(10240, Math.round(context * 0.16)), keepRecentTokens: Math.round(context / 4) };
+}
+
 export interface ExplainInput {
   task: string;
   instruction?: string;
@@ -636,9 +644,7 @@ export class AgentRun {
       const settingsManager = SettingsManager.inMemory({
         enableInstallTelemetry: false,
         defaultTools: ["read", "edit", "write", "grep", "find", "ls", "bash", "tool_search"],
-        // Pi's defaults (reserve 16384, keep 20000) suit big windows; with Strata's 24K they would compact at 8K
-        // and keep more than fits. Reserve covers one full turn (maxTokens 8192) plus slack.
-        compaction: { enabled: true, reserveTokens: 10240, keepRecentTokens: 8000 },
+        compaction: { enabled: true, ...compactionSettings(m.context ?? 32768) },
         retry: { enabled: true, maxRetries: 1 },
       } as any);
       const resourceLoader = new DefaultResourceLoader({
@@ -650,6 +656,9 @@ export class AgentRun {
           `# The user's rules (rules.md)\n\n${this.rules.text}`,
           ...(this.selfCheckout ? [SELF_WORK] : []),
           ...(this.opts.instructions ? [`# Instructions for this run\n\n${this.opts.instructions}`] : []),
+          // The task is also the first message, but compaction summarizes older messages, the task among them: here
+          // its phases and constraints stay word for word for the whole run.
+          `# Your task\n\nThe user's task, kept here because older messages get summarized:\n\n${this.task}`,
         ],
         extensionFactories: [this.extension, createToolSearchExtension()],
       });

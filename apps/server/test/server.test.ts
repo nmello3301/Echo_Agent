@@ -340,6 +340,16 @@ describe("self-work", () => {
   });
 });
 
+describe("context", () => {
+  test("compaction keeps a quarter of the window and leaves room for a full turn", async () => {
+    const { compactionSettings } = await import("../src/agent.ts");
+    assert.deepEqual(compactionSettings(32768), { reserveTokens: 10240, keepRecentTokens: 8192 }, "the old 32K behaviour");
+    assert.deepEqual(compactionSettings(65536), { reserveTokens: 10486, keepRecentTokens: 16384 });
+    const s = compactionSettings(24576); // Strata's window
+    assert.ok(s.reserveTokens >= 8192 + 1024 && s.keepRecentTokens < 24576 - s.reserveTokens);
+  });
+});
+
 describe("TLDR for requests", () => {
   const base = {
     task: "Add a Live chat mode to Echo", plan: [{ text: "STT endpoint", status: "in_progress" }, { text: "Live tab", status: "pending" }],
