@@ -77,6 +77,41 @@ function DecisionBlock({ ev }: { ev: Ev }) {
   );
 }
 
+/** "TLDR: explain the context": the main model sums up what a request is about and what each answer would do. */
+function Explain({ runId, requestId, answered }: { runId: string; requestId: string; answered: boolean }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function explain() {
+    setBusy(true);
+    setError("");
+    try {
+      setText((await api<{ text: string }>(`/api/agent/runs/${runId}/explain`, { method: "POST", json: { requestId } })).text);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (text) {
+    return (
+      <div className="border border-line rounded-md px-3 py-2 bg-panel text-sm">
+        <div className="text-[11px] uppercase tracking-wide text-dim">TLDR</div>
+        <Markdown text={text} />
+      </div>
+    );
+  }
+  if (answered) return null;
+  return (
+    <div className="flex items-center gap-2">
+      <Button kind="ghost" onClick={explain} disabled={busy} title="The main model sums up what led here and what each answer would do">
+        {busy ? "Explaining…" : "TLDR: explain the context"}
+      </Button>
+      {error && <span className="text-xs text-bad">{error}</span>}
+    </div>
+  );
+}
+
 function HitlCard({ ev, runId, answered, rowId }: { ev: Ev; runId: string; answered?: Ev; rowId?: number }) {
   const [reply, setReply] = useState("");
   const [verdict, setVerdict] = useState<boolean>();
@@ -85,6 +120,7 @@ function HitlCard({ ev, runId, answered, rowId }: { ev: Ev; runId: string; answe
     <div className="border border-bad/50 rounded-md p-3 bg-bad/5 space-y-2">
       <div className="font-medium text-bad">The agent needs you</div>
       <p className="text-sm">{ev.summary}</p>
+      <Explain runId={runId} requestId={ev.id} answered={!!answered} />
       {answered ? (
         <div className="space-y-1.5">
           <p className="text-sm text-dim">You replied: “{answered.reply}”</p>
@@ -119,6 +155,7 @@ function ApprovalCard({ ev, runId, answered }: { ev: Ev; runId: string; answered
       <div className="flex items-center gap-2"><span className="font-medium text-bad">Approval needed</span><Badge tone="warn">{ev.reason}</Badge>
         {ev.decision && <Badge>P(safe) {Number(ev.decision.noul ?? 0).toFixed(2)}</Badge>}</div>
       <pre className="font-mono text-xs bg-[#0a0c10] rounded p-2 whitespace-pre-wrap">{ev.action}</pre>
+      <Explain runId={runId} requestId={ev.id} answered={!!answered} />
       {answered ? <p className="text-sm text-dim">{answered.approved ? (answered.remember ? "Approved, folder always allowed from now on" : "Approved") : "Denied"}</p> : (
         <div className="flex flex-wrap gap-2">
           <Button kind="primary" onClick={() => answer(true)}>Approve</Button>

@@ -170,6 +170,20 @@ async function ask(q: string): Promise<string> {
   }
 }
 
+/** Ask until the answer is not "?", which prints a TLDR of the request instead. */
+async function askOrExplain(run: Run, requestId: string, q: string): Promise<string> {
+  for (;;) {
+    const a = await ask(q);
+    if (a !== "?") return a;
+    out(dim("    explaining…"));
+    try {
+      out((await run.explain(requestId)).split("\n").map((l) => `    ${l}`).join("\n"));
+    } catch (e) {
+      out(red(`    ✗ ${(e as Error).message}`));
+    }
+  }
+}
+
 function handlers(): TurnHandlers {
   const approve = o.approve ?? (tty ? "ask" : "ui");
   const hitl = o.hitl ?? (tty ? "ask" : "ui");
@@ -177,19 +191,19 @@ function handlers(): TurnHandlers {
   if (!["ask", "continue", "stop", "ui"].includes(hitl)) throw new Error(`--hitl: ask, continue, stop or ui (not ${hitl})`);
   return {
     onEvent: (e) => printEvent(e),
-    onApproval: async (r: ApprovalRequest) => {
+    onApproval: async (r: ApprovalRequest, run: Run) => {
       if (approve === "yes") return true;
       if (approve === "no") return { approved: false, reply: "declined by the SDK's --approve no policy" };
       if (approve === "ui") return void out(dim("    answer it in Echo's web UI (Agent tab)"));
-      const a = (await ask(`    approve? [y]es / [n]o${r.folder ? ` / [a]lways for ${r.folder}` : ""} / or type a reason to refuse: `)).toLowerCase();
+      const a = (await askOrExplain(run, r.id, `    approve? [y]es / [n]o${r.folder ? ` / [a]lways for ${r.folder}` : ""} / [?] TLDR / or type a reason to refuse: `)).toLowerCase();
       if (a === "y" || a === "yes") return true;
       if (r.folder && (a === "a" || a === "always")) return { approved: true, remember: true };
       return { approved: false, reply: a === "n" || a === "no" || !a ? undefined : a };
     },
-    onHitl: async (r: HitlRequest) => {
+    onHitl: async (r: HitlRequest, run: Run) => {
       if (hitl === "continue" || hitl === "stop") return hitl;
       if (hitl === "ui") return void out(dim("    answer it in Echo's web UI (Agent tab)"));
-      return (await ask(`    reply (continue / re-plan / revert / stop, or an instruction): `)) || "continue";
+      return (await askOrExplain(run, r.id, `    reply (continue / re-plan / revert / stop, ? for a TLDR, or an instruction): `)) || "continue";
     },
   };
 }
