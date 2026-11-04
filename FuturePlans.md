@@ -43,6 +43,16 @@ to "Done" with the date (or delete it). Known limitations of what already exists
 - Resume finished agent runs after a restart (runs live in memory today).
 - Echo may suggest new tools, skills and integrations; implementing them needs approval (rules.md).
 
+## Self-work (sdk/, added 2026-11-04)
+
+- **Visual checks for the dev instance**: a headless browser tool so the agent can screenshot its own UI changes
+  (today it can typecheck and build the UI, but only the user sees it, at http://dev.localhost:7777).
+- **Self-work runs in the Agent tab**: show the dev instance's status and link, and a "bring back as a branch" button.
+- **Faster decision time on the desktop**: Jebadiah runs from RAM beside the 27B (~3.5 s per question). Options: a
+  larger ubatch for op offload (one weight transfer per question), a smaller decision model on the GPU, or fewer
+  questions per decision time.
+- **Sub-agents through the SDK**: a research sub-run with fresh context whose summary returns to the parent run.
+
 ## Tools
 
 - OpenSCAD, FreeCAD and KiCad CLI (not installed: `pacman -S openscad freecad kicad`).

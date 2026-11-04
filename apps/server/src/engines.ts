@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, type WriteStream } from "node:fs";
 import path from "node:path";
 import { publish } from "./bus.ts";
-import { abs, config, type DecisionModel, dockerEnv, type MainModel, ROOT } from "./config.ts";
+import { abs, attach, config, type DecisionModel, dockerEnv, type MainModel, ROOT } from "./config.ts";
 
 export type EngineStatus = "stopped" | "starting" | "ready" | "error";
 
@@ -161,11 +161,12 @@ export class Engine {
   }
 }
 
-function llamaArgs(m: { model?: string; mmproj?: string; draft?: string; context?: number; gpu_layers?: number; threads?: number; port?: number }, extra: string[]) {
+function llamaArgs(m: { model?: string; mmproj?: string; draft?: string; context?: number; gpu_layers?: number; threads?: number; port?: number; kv_cache?: string; mmproj_on_cpu?: boolean }, extra: string[]) {
   const a = ["-m", abs(m.model!), "--host", "127.0.0.1", "--port", String(m.port), "-c", String(m.context ?? 8192), "-np", "1"];
   if (m.gpu_layers !== undefined) a.push("-ngl", String(m.gpu_layers));
   if (m.threads) a.push("-t", String(m.threads));
-  if (m.mmproj && existsSync(abs(m.mmproj))) a.push("--mmproj", abs(m.mmproj));
+  if (m.kv_cache) a.push("-ctk", m.kv_cache, "-ctv", m.kv_cache);
+  if (m.mmproj && existsSync(abs(m.mmproj))) a.push("--mmproj", abs(m.mmproj), ...(m.mmproj_on_cpu ? ["--no-mmproj-offload"] : []));
   if (m.draft && existsSync(abs(m.draft))) a.push("--model-draft", abs(m.draft), "--spec-type", "draft-mtp");
   return [...a, ...extra];
 }
@@ -184,7 +185,7 @@ function mainSpec(m: MainModel): Spec {
   const health = `http://127.0.0.1:${m.port}/health`;
   if (m.engine === "strata") {
     // BROWSER=true: Strata's start script passes --open; Echo has its own UI, so no browser tab on every start
-    return { id: m.id, name: m.name, role: "main", cmd: abs(m.command!), args: [], env: { BROWSER: "true" }, healthUrl: health };
+    return { id: m.id, name: m.name, role: "main", cmd: abs(m.command!), args: [], env: { BROWSER: "true" }, healthUrl: health, external: attach.on };
   }
   return {
     id: m.id,
@@ -194,6 +195,7 @@ function mainSpec(m: MainModel): Spec {
     args: llamaArgs(m, ["--jinja", "--reasoning-format", "deepseek", "--metrics", "--cache-reuse", "256"]),
     env: llamaEnv(true),
     healthUrl: health,
+    external: attach.on, // a dev instance uses the live Echo's model: a second copy would not fit in VRAM
   };
 }
 
@@ -208,6 +210,7 @@ function decisionSpecs(d: DecisionModel): Spec[] {
       // GPU visible even with 0 layers: weights stay in RAM, large prompt batches run on the GPU (~4x faster decisions)
       env: llamaEnv(helpersOnGpu),
       healthUrl: `http://127.0.0.1:${d.port}/health`,
+      external: attach.on,
     },
     {
       id: "decision-server",
@@ -221,6 +224,7 @@ function decisionSpecs(d: DecisionModel): Spec[] {
         "--model-dir", abs(d.tokenizer!),
       ],
       healthUrl: `http://127.0.0.1:${config.echo.ports.decision}/health`,
+      external: attach.on,
     },
   ];
 }
@@ -247,6 +251,14 @@ export async function useMainModel(id: string): Promise<void> {
   if (!m) throw new Error(`unknown model ${id}`);
   if (m.engine !== "strata" && m.model && !existsSync(abs(m.model))) throw new Error(`${m.name}: model file not downloaded yet (${m.model})`);
   if (m.engine === "strata" && !existsSync(abs(m.command!))) throw new Error(`${m.name}: Strata is not set up yet (missing ${m.command})`);
+  if (attach.on) {
+    // A dev instance never loads or unloads models: it uses whichever one the live Echo is serving
+    const e = get(mainSpec(m));
+    if (e.status !== "ready" && !(await e.healthy())) throw new Error(`${m.name} is not running in the live Echo; pick it there first (this is a dev instance)`);
+    activeMainId = id;
+    publish({ type: "active_model", id });
+    return e.start();
+  }
   const run = async () => {
     for (const e of engines.values()) if (e.spec.role === "main" && e.spec.id !== id) await e.stop();
     const gpu = m.engine !== "strata";
@@ -323,10 +335,10 @@ function ragSpecs(): Spec[] {
   return [
     { id: "rag-embed", name: "Notes embeddings (Qwen3-Embedding-0.6B)", role: "decision-server", cmd: abs(config.echo.paths.llama_server),
       args: ["-m", abs("models/rag/Qwen3-Embedding-0.6B-Q8_0.gguf"), "--embedding", "--pooling", "last", ...common, "--port", String(config.echo.ports.embed ?? 8093)],
-      env: llamaEnv(helpersOnGpu), healthUrl: `http://127.0.0.1:${config.echo.ports.embed ?? 8093}/health` },
+      env: llamaEnv(helpersOnGpu), healthUrl: `http://127.0.0.1:${config.echo.ports.embed ?? 8093}/health`, external: attach.on },
     { id: "rag-rerank", name: "Notes reranker (Qwen3-Reranker-0.6B)", role: "decision-server", cmd: abs(config.echo.paths.llama_server),
       args: ["-m", abs("models/rag/qwen3-reranker-0.6b-q8_0.gguf"), "--reranking", ...common, "--port", String(config.echo.ports.rerank ?? 8094)],
-      env: llamaEnv(helpersOnGpu), healthUrl: `http://127.0.0.1:${config.echo.ports.rerank ?? 8094}/health` },
+      env: llamaEnv(helpersOnGpu), healthUrl: `http://127.0.0.1:${config.echo.ports.rerank ?? 8094}/health`, external: attach.on },
   ];
 }
 

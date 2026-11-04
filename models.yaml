@@ -14,6 +14,11 @@ main:
     # gpu_layers unset: llama-server's --fit picks the layers that fit (1 GiB VRAM margin)
     draft: models/qwen27b/mtp-Qwen3.8-27B-Q4_0.gguf   # MTP head for speculative decoding
     threads: 8
+    # Leave VRAM for the Windows desktop (the 4090 also drives the screens): on a full card Windows moves part of
+    # the model to system RAM, and the next long prompt crawls (measured 2026-11-04: 50 tok/s for 10 min instead
+    # of 2,200 tok/s). These two free ~2 GB.
+    kv_cache: q8_0             # 8-bit KV cache: ~1 GiB less at 32K; quality loss is negligible
+    mmproj_on_cpu: true        # vision projector in RAM (0.9 GB); reading an image takes a few seconds longer
     supports_tools: true
     supports_vision: true
     reasoning_levels: [off, low, medium, high]

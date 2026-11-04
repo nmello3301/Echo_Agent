@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -202,7 +202,11 @@ describe("tools", () => {
     assert.ok(out.length < 1700);
   });
 
-  test("python workspace keeps state between calls and reports errors", async () => {
+  // The workspace runs in bubblewrap, which cannot nest (echo_verify runs the tests in a sandbox) and needs the
+  // container's security options (docker-compose.yml): skip, rather than fail, where it cannot work.
+  // (inside a sandbox the probe can hang rather than fail, hence the timeout)
+  const noSandbox = spawnSync("bwrap", ["--ro-bind", "/", "/", "--unshare-all", "--die-with-parent", "true"], { timeout: 3000 }).status !== 0;
+  test("python workspace keeps state between calls and reports errors", { skip: noSandbox && "bubblewrap cannot create a sandbox here" }, async () => {
     const { PythonWorkspace } = await import("../src/tools/python.ts");
     const dir = mkdtempSync(path.join(tmp, "py-"));
     const ws = new PythonWorkspace(dir);
@@ -216,6 +220,109 @@ describe("tools", () => {
     } finally {
       ws.reset();
     }
+  });
+});
+
+describe("self-work", () => {
+  /** A minimal Echo working copy: what echoCheckout looks for, in a git repository. */
+  function fakeCheckout(): string {
+    const dir = mkdtempSync(path.join(tmp, "copy-"));
+    mkdirSync(path.join(dir, "apps/server/src"), { recursive: true });
+    writeFileSync(path.join(dir, "apps/server/src/main.ts"), "");
+    writeFileSync(path.join(dir, "echo.yaml"), "ports:\n  ui: 7777\n");
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    return dir;
+  }
+
+  test("a working copy is found from any folder inside it, and the live tree never counts", async () => {
+    const { echoCheckout } = await import("../src/selfdev.ts");
+    const dir = fakeCheckout();
+    mkdirSync(path.join(dir, "apps/web/src"), { recursive: true });
+    assert.equal(echoCheckout(path.join(dir, "apps/web/src")), dir);
+    assert.equal(echoCheckout(dir), dir);
+    assert.equal(echoCheckout(tmp), undefined);
+    assert.equal(echoCheckout(ROOT), undefined, "the live install is not a working copy");
+  });
+
+  test("linking a copy points its git-ignored dependencies at the live install, once", async () => {
+    const { linkCheckout } = await import("../src/selfdev.ts");
+    const dir = fakeCheckout();
+    const r = linkCheckout(dir);
+    assert.ok(r.linked.includes("node_modules"));
+    assert.equal(readlinkSync(path.join(dir, "node_modules")), path.join(ROOT, "node_modules"));
+    assert.match(readFileSync(path.join(dir, ".git/info/exclude"), "utf8"), /^\/node_modules$/m);
+    assert.equal(execFileSync("git", ["config", "user.name"], { cwd: dir }).toString().trim(), "Echo (self-work)");
+    assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: dir }).toString().includes("node_modules"), false, "links stay out of git status");
+    const again = linkCheckout(dir);
+    assert.deepEqual(again.linked, []);
+    assert.ok(again.kept.includes("node_modules"));
+    assert.equal(readFileSync(path.join(dir, ".git/info/exclude"), "utf8").match(/^\/node_modules$/gm)?.length, 1);
+    assert.throws(() => linkCheckout(ROOT), /live Echo/);
+    assert.throws(() => linkCheckout(tmp), /not an Echo working copy/);
+  });
+
+  test("a dev instance shifts its own ports and keeps the live Echo's shared ones", () => {
+    const run = (env: Record<string, string>) => JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e",
+      `const { config } = await import(${JSON.stringify(path.join(ROOT, "apps/server/src/config.ts"))}); console.log(JSON.stringify(config.echo.ports))`],
+    { env: { ...process.env, ...env }, encoding: "utf8" }).trim().split("\n").at(-1)!);
+    const live = run({ ECHO_ATTACH: "", ECHO_PORT_OFFSET: "" }); // as the live Echo, whatever runs this test
+    const devPorts = run({ ECHO_ATTACH: "1", ECHO_PORT_OFFSET: "1000" });
+    assert.equal(devPorts.ui, live.ui + 1000);
+    assert.equal(devPorts.tts, live.tts + 1000);
+    for (const shared of ["decision", "search", "embed", "rerank", "hugin"]) assert.equal(devPorts[shared], live[shared], shared);
+  });
+
+  test("dev.localhost requests reach the dev instance, streaming, and say so when it is not running", async () => {
+    const { dev, isDevHost, proxyHttp } = await import("../src/selfdev.ts");
+    assert.ok(isDevHost("dev.localhost:7777") && isDevHost("DEV.localhost") && !isDevHost("localhost:7777") && !isDevHost("dev.localhost.evil.com"));
+    const target = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream", "X-Path": req.url ?? "", "X-Host": req.headers.host ?? "", "X-Fwd": String(req.headers["x-forwarded-host"]) });
+      res.write("data: 1\n\n");
+      setTimeout(() => res.end("data: 2\n\n"), 50);
+    });
+    await new Promise<void>((r) => target.listen(0, "127.0.0.1", r));
+    const proxy = createServer(proxyHttp);
+    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+    const url = `http://127.0.0.1:${(proxy.address() as any).port}/api/x?y=1`;
+    try {
+      const off = await fetch(url);
+      assert.equal(off.status, 503);
+      assert.match(await off.text(), /No dev instance is running/);
+      Object.assign(dev, { status: "ready", port: (target.address() as any).port });
+      const on = await fetch(url, { headers: { "X-Test": "1" } });
+      assert.equal(on.headers.get("x-path"), "/api/x?y=1");
+      // the dev instance must not see dev.localhost, or it would try to proxy the request onwards itself
+      assert.equal(on.headers.get("x-host"), `127.0.0.1:${(target.address() as any).port}`);
+      assert.equal(on.headers.get("x-fwd"), `127.0.0.1:${(proxy.address() as any).port}`);
+      assert.equal(await on.text(), "data: 1\n\ndata: 2\n\n");
+    } finally {
+      Object.assign(dev, { status: "stopped", port: 0 });
+      proxy.close();
+      target.close();
+    }
+  });
+
+  test("echo_dev_request reports a WAV body's length", async () => {
+    const { wavInfo } = await import("../src/tools/echodev.ts");
+    const rate = 16000;
+    const pcm = Buffer.alloc(rate * 2 * 1.5); // 1.5 s of 16-bit mono
+    const h = Buffer.alloc(44);
+    h.write("RIFF", 0);
+    h.writeUInt32LE(36 + pcm.length, 4);
+    h.write("WAVEfmt ", 8);
+    h.writeUInt32LE(16, 16);
+    h.writeUInt16LE(1, 20);
+    h.writeUInt16LE(1, 22);
+    h.writeUInt32LE(rate, 24);
+    h.writeUInt32LE(rate * 2, 28);
+    h.writeUInt16LE(2, 32);
+    h.writeUInt16LE(16, 34);
+    h.write("data", 36);
+    h.writeUInt32LE(pcm.length, 40);
+    assert.equal(wavInfo(Buffer.concat([h, pcm])), "WAV 16000 Hz, 1 ch, 16-bit, 1.50 s of audio");
+    h.writeUInt32LE(0xffffffff, 40); // streamed: size left open
+    assert.match(wavInfo(Buffer.concat([h, pcm])) ?? "", /1\.50 s/);
+    assert.equal(wavInfo(Buffer.from("not audio")), undefined);
   });
 });
 

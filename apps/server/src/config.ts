@@ -20,6 +20,10 @@ export interface MainModel {
   context?: number;
   gpu_layers?: number;
   threads?: number;
+  /** llama-server KV cache type for K and V (f16 by default; q8_0 halves it) */
+  kv_cache?: string;
+  /** Keep the vision projector in RAM instead of VRAM */
+  mmproj_on_cpu?: boolean;
   supports_tools?: boolean;
   supports_vision?: boolean;
   reasoning_levels?: string[];
@@ -62,8 +66,23 @@ export interface ModelsConfig {
   decision: DecisionModel[];
 }
 
+/** A dev instance: a working copy of Echo that the agent edits, started by the live Echo (selfdev.ts). It uses the
+ *  live Echo's engines (main model, decision model, notes RAG) and runs its own UI, TTS and any new service on ports
+ *  shifted by `offset`, so both run side by side on one GPU. */
+export const attach = {
+  on: process.env.ECHO_ATTACH === "1",
+  offset: Number(process.env.ECHO_PORT_OFFSET ?? 0) || 0,
+};
+// Services a dev instance shares with the live Echo instead of running its own
+const SHARED_PORTS = new Set(["decision", "search", "embed", "rerank", "hugin"]);
+
 function load<T>(file: string): T {
-  return YAML.parse(readFileSync(path.join(ROOT, file), "utf8")) as T;
+  const v = YAML.parse(readFileSync(path.join(ROOT, file), "utf8")) as T;
+  if (file === "echo.yaml" && attach.offset) {
+    const ports = (v as EchoConfig).ports as Record<string, number>;
+    for (const k of Object.keys(ports)) if (!SHARED_PORTS.has(k)) ports[k] += attach.offset;
+  }
+  return v;
 }
 
 export const config = {

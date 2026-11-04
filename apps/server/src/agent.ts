@@ -24,6 +24,8 @@ import { db, now } from "./db.ts";
 import { type Answer, decisions, type Questions } from "./decision.ts";
 import { activeMain, useMainModel } from "./engines.ts";
 import { checkpoint, diffSince, diffStat, initRepo, isRepo, revertTo } from "./git.ts";
+import { echoCheckout } from "./selfdev.ts";
+import { echoDevTools } from "./tools/echodev.ts";
 import { DEFERRED_HINT, echoTools } from "./tools/index.ts";
 import { sandboxedShell } from "./tools/util.ts";
 import { classify, extensionDirsOnDisk, loadRules, pathVerdict, rememberExtensionDir, type Rules } from "./rules.ts";
@@ -55,8 +57,16 @@ interface Pending {
 
 const AGENT_DIR = abs(path.join(config.echo.paths.data, "pi"));
 
-const SYSTEM_APPEND = `You are Echo's coding agent, running on a local model on a laptop. Tokens are slow and expensive:
-- Keep replies and tool calls short. Read only the parts of files you need.
+export interface RunOptions {
+  /** Extra instructions appended to the system prompt for this run only */
+  instructions?: string;
+  /** Tool calls between decision times (default: agent.step_budget in echo.yaml) */
+  stepBudget?: number;
+}
+
+const systemAppend = (m: MainModel) => `You are Echo's coding agent, running locally on the user's own GPU (${m.name}). Your context window is
+${Math.round((m.context ?? 32768) / 1024)}K tokens and older turns get compacted, so context is your scarcest resource:
+- Keep replies and tool calls short. Find code with grep or find first, then read only the lines you need (offset/limit).
 - Keep a plan with the todo tool and update it as you go.
 - When a subtask is done, or you are unsure how to continue, call the checkpoint tool with a short summary.
 - The user's rules below say what you may do on your own. Routine actions they allow need no permission and no
@@ -66,6 +76,18 @@ const SYSTEM_APPEND = `You are Echo's coding agent, running on a local model on 
 - Look things up with web_search and fetch_page (pass a question so only the relevant part comes back) instead of guessing APIs.
 - Check visual results by looking at them (screenshot, previews, read on an image file), not by assuming.
 - ${DEFERRED_HINT}`;
+
+// Added when the working folder is a working copy of Echo itself (see selfdev.ts)
+const SELF_WORK = `# Working on Echo itself
+
+The working folder is a working copy of Echo's own source: the program you are running in. A run in this folder is the
+user asking you to change Echo, so you need no further permission to edit it: your changes stay in this copy until the
+user reviews and merges them. Never write to the live install.
+- AGENTS.md (already in your context) maps the code and its conventions: use it instead of exploring.
+- After each batch of edits run echo_verify. Run the copy with echo_dev (restart after server or service changes) and
+  test what you built with echo_dev_request, which also times each request.
+- Never start Echo, its services or any other long-running process with bash: bash waits until the process exits.
+- Commit finished, verified steps with git (git add -A && git commit -m "...") so the user can review them one by one.`;
 
 // Sent when a turn hits the output cap (maxTokens) before any tool call: high effort can spend the whole
 // turn planning, and without a nudge the run would go idle with nothing written.
@@ -140,17 +162,27 @@ export class AgentRun {
   private hitCapWithoutTool = false;
   private autoContinues = 0;
   rules: Rules = loadRules();
+  opts: RunOptions;
+  /** The Echo working copy this run works in, if any: it gets the echo_* self-work tools and instructions */
+  selfCheckout: string | undefined;
 
-  constructor(cwd: string, task: string, effort: Effort) {
+  constructor(cwd: string, task: string, effort: Effort, opts: RunOptions = {}) {
     this.cwd = path.resolve(cwd);
     this.toolset = echoTools(this.cwd);
     this.task = task;
     this.effort = effort;
+    this.opts = opts;
+    this.selfCheckout = echoCheckout(this.cwd);
+  }
+
+  get stepBudget() {
+    return this.opts.stepBudget ?? config.echo.agent.step_budget;
   }
 
   emit(kind: string, data: Record<string, unknown> = {}, store = true) {
-    const ev = { kind, ts: Date.now(), ...data };
-    if (store) this.events.push(ev);
+    const ev: TimelineEvent = { kind, ts: Date.now(), ...data };
+    // stored events are numbered 1, 2, ... so a client can resume a stream after the last one it saw
+    if (store) ev.seq = this.events.push(ev);
     publish({ type: "agent", runId: this.id, event: ev });
     if (store) this.persist();
   }
@@ -175,6 +207,7 @@ export class AgentRun {
       todo: this.todo, checkpoints: this.checkpoints, model: this.model?.id,
       pending: [...this.pending.values()].map((p) => ({ id: p.id, kind: p.kind })),
       context: this.session?.getContextUsage?.(),
+      events: this.events.length, stepBudget: this.stepBudget, self: this.selfCheckout ?? null,
     };
   }
 
@@ -358,6 +391,7 @@ export class AgentRun {
   private extension = (pi: ExtensionAPI) => {
     const run = this;
     for (const t of this.toolset.core) pi.registerTool(t as any);
+    if (this.selfCheckout) for (const t of echoDevTools(this.selfCheckout)) pi.registerTool(t as any);
     for (const g of this.toolset.deferred) for (const t of g.tools) pi.registerTool({ ...(t as any), exposure: "deferred", namespace: g.namespace });
     pi.registerTool({
       name: "todo",
@@ -455,8 +489,8 @@ export class AgentRun {
       }
       // Step budget: decision time after N tool calls.
       run.callsSinceDecision++;
-      if (run.callsSinceDecision > config.echo.agent.step_budget) {
-        const d = await run.decisionTime(`step budget (${config.echo.agent.step_budget} tool calls)`);
+      if (run.callsSinceDecision > run.stepBudget) {
+        const d = await run.decisionTime(`step budget (${run.stepBudget} tool calls)`);
         const g = await run.apply(d);
         run.setStatus("action");
         run.emit("phase", { phase: "action" });
@@ -472,7 +506,7 @@ export class AgentRun {
       .run(this.id, this.cwd, this.task, modelId ?? null, this.status, "[]", now(), now());
     this.instruction = this.task;
     this.rules = loadRules();
-    this.emit("task", { task: this.task, cwd: this.cwd });
+    this.emit("task", { task: this.task, cwd: this.cwd, self: this.selfCheckout, stepBudget: this.stepBudget, instructions: this.opts.instructions });
     try {
       const id = modelId ?? activeMain()?.model.id ?? config.echo.default_model;
       this.emit("note", { text: `Loading ${id}…` });
@@ -499,7 +533,12 @@ export class AgentRun {
         cwd: this.cwd,
         agentDir: AGENT_DIR,
         settingsManager,
-        appendSystemPrompt: [SYSTEM_APPEND, `# The user's rules (rules.md)\n\n${this.rules.text}`],
+        appendSystemPrompt: [
+          systemAppend(m),
+          `# The user's rules (rules.md)\n\n${this.rules.text}`,
+          ...(this.selfCheckout ? [SELF_WORK] : []),
+          ...(this.opts.instructions ? [`# Instructions for this run\n\n${this.opts.instructions}`] : []),
+        ],
         extensionFactories: [this.extension, createToolSearchExtension()],
       });
       await resourceLoader.reload();
@@ -617,8 +656,8 @@ export class AgentRun {
 
 export const runs = new Map<string, AgentRun>();
 
-export async function startRun(cwd: string, task: string, effort: Effort, model?: string) {
-  const r = new AgentRun(cwd, task, effort);
+export async function startRun(cwd: string, task: string, effort: Effort, model?: string, opts: RunOptions = {}) {
+  const r = new AgentRun(cwd, task, effort, opts);
   runs.set(r.id, r);
   void r.start(model);
   return r;

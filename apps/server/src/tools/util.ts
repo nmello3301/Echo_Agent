@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { config, ROOT } from "../config.ts";
 
@@ -88,7 +88,13 @@ export function bwrapArgs(cwd: string, opts: { network?: boolean; writable?: str
   const a = ["--ro-bind", "/", "/", "--dev", "/dev", ...(IN_CONTAINER ? ["--ro-bind", "/proc", "/proc"] : ["--proc", "/proc"]), "--tmpfs", "/tmp", "--tmpfs", home];
   // The home folder is hidden (keys, browser profiles, other projects); toolchains installed under it stay
   // visible read-only so node/npm (mise), blender/godot (~/.local/bin), cargo and Echo's venvs still work.
-  for (const d of TOOLCHAINS(home)) if (existsSync(d)) a.push("--ro-bind", d, d);
+  // bubblewrap cannot mount onto a symlink (a self-work copy links node_modules and venvs to the live install):
+  // bind such a link's target instead, which is where the link leads anyway.
+  for (const d of TOOLCHAINS(home)) {
+    if (!existsSync(d)) continue;
+    const real = lstatSync(d).isSymbolicLink() ? realpathSync(d) : d;
+    a.push("--ro-bind", real, real);
+  }
   a.push("--bind", cwd, cwd, "--unshare-all", "--die-with-parent", "--chdir", cwd);
   for (const d of opts.writable ?? []) if (d !== cwd) a.push("--bind", d, d);
   if (opts.network || config.echo.agent.network) a.push("--share-net");

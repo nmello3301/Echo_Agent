@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-venv python3-pip \
       build-essential cmake ninja-build \
       bubblewrap \
+      ripgrep fd-find \
       tesseract-ocr tesseract-ocr-eng tesseract-ocr-por poppler-utils \
     && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \

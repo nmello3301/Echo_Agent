@@ -1,5 +1,30 @@
 # Benchmarks
 
+## Desktop: RTX 4090 24 GB, Docker Desktop on Windows 11 (2026-11-04)
+
+Qwen3.8-27B UD-Q4_K_M, llama.cpp b11381, MTP draft, 32K context, all layers on the GPU.
+
+| Measure | Value |
+| --- | --- |
+| Decode | 55-88 tok/s (MTP draft acceptance 0.6-0.94) |
+| Prompt reading | 1,900-2,200 tok/s (8K and 30K-token prompts) |
+| Time to first token, effort off, short prompt | 0.4-0.7 s; ~1.5 s for the first request after idle |
+| Time to first token, effort off, ~3.5K-token prompt | 2.8 s |
+| Answer starts, effort low / medium, simple question | ~1.8 s / ~1.5 s (thinks first) |
+| Decision time (Jebadiah from RAM, op offload, 7 questions) | ~26 s, 1-3.4 s per question at 300-500 tok/s |
+| Agent: edit + echo_verify + dev instance + request + commit | 47 s, of which 26 s was one decision time |
+
+The model is a hybrid (`qwen35`: 65 layers, full attention every 4th), so the KV cache is small: ~64 KB per token
+in f16, ~2 GiB at 32K.
+
+**VRAM stalls.** With the 4090 also driving the desktop, the card was full (llama 20.2 GB + 0.66 GB already in
+shared system memory; dwm and Firefox ~1.5 GB each). The first long prompt after a quiet spell then read at 50-66
+tok/s (a 30K prompt took 574 s, a 5K agent prompt 74 s) and the same prompt right after at 2,190 tok/s: Windows
+moves part of the model's GPU memory to system RAM under pressure. models.yaml now sets `kv_cache: q8_0` and
+`mmproj_on_cpu: true` for the 27B (~2 GB freed); re-measure after the next model start.
+
+## Laptop: RTX 3060 Laptop 6 GB
+
 Measured on this laptop (RTX 3060 Laptop 6 GB, Ryzen 7 4800H, 62 GiB RAM), on AC, 2026-10-03.
 Numbers come from llama-server's own `timings` fields. Re-run with `python3 tools/bench.py <url> <words> <effort>`.
 

@@ -8,8 +8,10 @@
     "build": "npm run build -w apps/web",
     "dev:web": "npm run dev -w apps/web",
     "server": "node apps/server/src/main.ts",
+    "sdk": "node sdk/cli.ts",
     "test": "node --test \"apps/server/test/*.test.ts\"",
-    "typecheck": "tsc -p apps/server && tsc -p apps/web --noEmit"
+    "typecheck": "tsc -p apps/server && tsc -p apps/web --noEmit && tsc -p sdk",
+    "verify": "npm run typecheck && npm test"
   },
   "engines": { "node": ">=22.19" }
 }

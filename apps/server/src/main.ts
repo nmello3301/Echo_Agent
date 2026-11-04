@@ -3,11 +3,11 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { serve } from "@hono/node-server";
+import { getRequestListener } from "@hono/node-server";
 import { type Context, Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { WebSocketServer } from "ws";
-import { hitlVerdict, pastRuns, runEvents, runs, startRun } from "./agent.ts";
+import { hitlVerdict, pastRuns, type RunOptions, runEvents, runs, startRun } from "./agent.ts";
 import { subscribe } from "./bus.ts";
 import { config, dockerEnv, ROOT } from "./config.ts";
 import { db, now } from "./db.ts";
@@ -17,6 +17,7 @@ import { activeMain, activeMainId, allEngines, engineById, huginEnv, startDecisi
 import { type Effort, effortFields, type StreamResult, streamChat } from "./llm.ts";
 import { lastSample, startMonitor } from "./monitor.ts";
 import { formatSources, indexStatus, listNotes, readNote, searchNotes, startIndexer, syncIndex } from "./rag.ts";
+import { dev, isDevHost, linkCheckout, proxyHttp, proxyUpgrade, verify, type VerifyStep } from "./selfdev.ts";
 import { chatWithWeb, type WebSource } from "./webchat.ts";
 
 const app = new Hono();
@@ -182,14 +183,73 @@ app.delete("/api/presets/:name", (c) => {
 // ---------- agent ----------
 app.get("/api/agent/runs", (c) => c.json({ live: [...runs.values()].map((r) => r.summary()), past: pastRuns() }));
 app.post("/api/agent/runs", async (c) => {
-  const b = await c.req.json<{ cwd: string; task: string; effort?: Effort; model?: string }>();
+  const b = await c.req.json<{ cwd: string; task: string; effort?: Effort; model?: string } & RunOptions>();
   if (!b.cwd || !existsSync(b.cwd) || !statSync(b.cwd).isDirectory()) return c.json({ error: `not a folder: ${b.cwd}` }, 400);
-  const r = await startRun(b.cwd, b.task, b.effort ?? (config.echo.agent.default_effort as Effort), b.model);
+  if (!b.task?.trim()) return c.json({ error: "no task" }, 400);
+  if (b.stepBudget !== undefined && !(Number.isInteger(b.stepBudget) && b.stepBudget > 0)) return c.json({ error: "stepBudget must be a positive integer" }, 400);
+  const r = await startRun(b.cwd, b.task, b.effort ?? (config.echo.agent.default_effort as Effort), b.model, { instructions: b.instructions, stepBudget: b.stepBudget });
   return c.json(r.summary());
 });
 app.get("/api/agent/runs/:id", (c) => {
   const r = runs.get(c.req.param("id"));
   return c.json({ summary: r?.summary() ?? null, events: runEvents(c.req.param("id")) });
+});
+/** A run's events as server-sent events: the stored ones after `?after=<seq>`, then live ones (including the
+ *  text_delta/thinking_delta stream) until the client leaves. A finished run's stream ends with an `end` event. */
+app.get("/api/agent/runs/:id/events", (c) => {
+  const id = c.req.param("id");
+  const after = Math.max(0, Number(c.req.query("after") ?? 0) || 0);
+  return streamSSE(c, async (stream) => {
+    const live = runs.get(id);
+    const queue: any[] = [];
+    let wake: (() => void) | undefined;
+    let closed = false;
+    // subscribe before reading the stored events, so nothing falls between the two; duplicates are dropped by seq
+    const off = live ? subscribe((e) => {
+      if (e.type === "agent" && e.runId === id) {
+        queue.push(e.event);
+        wake?.();
+      }
+    }) : () => {};
+    stream.onAbort(() => {
+      closed = true;
+      off();
+      wake?.();
+    });
+    const stored = runEvents(id) as any[];
+    if (!live && !stored.length) {
+      await stream.writeSSE({ event: "error", data: JSON.stringify({ error: "no such run" }) });
+      return;
+    }
+    let last = after;
+    for (let i = after; i < stored.length; i++) await stream.writeSSE({ event: "event", data: JSON.stringify({ ...stored[i], seq: i + 1 }) });
+    last = Math.max(last, stored.length);
+    if (!live) {
+      await stream.writeSSE({ event: "end", data: JSON.stringify({ live: false }) });
+      return;
+    }
+    await stream.writeSSE({ event: "summary", data: JSON.stringify(live.summary()) });
+    while (!closed) {
+      while (queue.length) {
+        const ev = queue.shift();
+        if (typeof ev.seq === "number") {
+          if (ev.seq <= last) continue;
+          last = ev.seq;
+        }
+        await stream.writeSSE({ event: "event", data: JSON.stringify(ev) });
+      }
+      // wait for more; a ping every 15 s keeps idle connections (and their body timeouts) alive
+      const timedOut = await new Promise<boolean>((r) => {
+        const t = setTimeout(() => r(true), 15_000);
+        wake = () => {
+          clearTimeout(t);
+          r(false);
+        };
+      });
+      wake = undefined;
+      if (timedOut && !closed) await stream.writeSSE({ event: "ping", data: "{}" });
+    }
+  });
 });
 const run = (id: string) => {
   const r = runs.get(id);
@@ -410,7 +470,41 @@ app.delete("/api/read/voices/:id", async (c) => {
 
 app.get("/api/rules", (c) => c.json({ path: path.join(ROOT, "rules.md"), text: readFileSync(path.join(ROOT, "rules.md"), "utf8") }));
 
+// ---------- self-work: the agent on a working copy of Echo (selfdev.ts) ----------
+app.post("/api/self/link", async (c) => {
+  try {
+    return c.json(linkCheckout((await c.req.json<{ dir: string }>()).dir));
+  } catch (e) {
+    return c.json(err(e), 400);
+  }
+});
+app.post("/api/self/verify", async (c) => {
+  const b = await c.req.json<{ dir: string; only?: VerifyStep[] }>();
+  try {
+    return c.json(await verify(b.dir, b.only));
+  } catch (e) {
+    return c.json(err(e), 400);
+  }
+});
+app.get("/api/self/dev", (c) => c.json(dev.info()));
+app.post("/api/self/dev/start", async (c) => {
+  const b = await c.req.json<{ dir?: string; buildUi?: boolean }>().catch(() => ({}) as { dir?: string; buildUi?: boolean });
+  const dir = b.dir ?? dev.dir;
+  if (!dir) return c.json({ error: "which working copy? pass dir" }, 400);
+  try {
+    return c.json(await dev.start(dir, { buildUi: b.buildUi }));
+  } catch (e) {
+    return c.json({ ...err(e), log: dev.tail(60) }, 500);
+  }
+});
+app.post("/api/self/dev/stop", async (c) => {
+  await dev.stop();
+  return c.json(dev.info());
+});
+app.get("/api/self/dev/logs", (c) => c.json({ log: dev.tail(Number(c.req.query("lines") ?? 200)) }));
+
 // ---------- static UI ----------
+app.all("/api/*", (c) => c.json({ error: `no such endpoint: ${c.req.method} ${c.req.path}` }, 404));
 const dist = path.join(ROOT, "apps/web/dist");
 const types: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json", ".woff2": "font/woff2" };
 app.get("*", (c) => {
@@ -421,11 +515,13 @@ app.get("*", (c) => {
 });
 
 // ---------- server ----------
-const server = serve({ fetch: app.fetch, hostname: dockerEnv.host ?? config.echo.host, port: config.echo.ports.ui }, (i) =>
-  console.log(`[echo] UI on http://127.0.0.1:${i.port}`),
-);
+// Requests for dev.localhost go to the dev instance (selfdev.ts); everything else is this Echo.
+const honoListener = getRequestListener(app.fetch);
+const server = http.createServer((req, res) => (isDevHost(req.headers.host) ? proxyHttp(req, res) : honoListener(req, res)));
+server.listen(config.echo.ports.ui, dockerEnv.host ?? config.echo.host, () => console.log(`[echo] UI on http://127.0.0.1:${config.echo.ports.ui}`));
 const wss = new WebSocketServer({ noServer: true });
-(server as any).on("upgrade", (req: any, socket: any, head: any) => {
+server.on("upgrade", (req, socket, head) => {
+  if (isDevHost(req.headers.host)) return proxyUpgrade(req, socket as any, head);
   if (req.url !== "/ws") return socket.destroy();
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
 });
@@ -451,6 +547,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log("[echo] stopping engines…");
+    await dev.stop().catch(() => {});
     for (const r of runs.values()) await r.stop().catch(() => {});
     await stopAll();
     process.exit(0);

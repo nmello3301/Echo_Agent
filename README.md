@@ -153,9 +153,19 @@ The model files are already in `models/strata/models/IQ2_XS/`. Setup writes `run
 ## Configuration
 
 - `echo.yaml`: ports, paths, agent step budget, sandbox, thresholds, notifications.
-- `models.yaml`: model endpoints. Entries with `coming_soon: true` show in the selectors, disabled.
+- `models.yaml`: model endpoints. Entries with `coming_soon: true` show in the selectors, disabled. For llama-server
+  models, `kv_cache: q8_0` halves the KV cache and `mmproj_on_cpu: true` keeps the vision projector in RAM; both
+  leave VRAM free for the desktop (on a full card Windows moves part of the model to system RAM and long prompts crawl).
 
 Both reload when saved.
+
+## SDK and self-work
+
+`sdk/` drives the agent from scripts and the terminal (`node sdk/cli.ts help`), and runs the self-work loop where
+Echo changes its own code: `node sdk/cli.ts self init` clones this repo into the projects folder, `self run "..."`
+gives the agent a task there, and the agent verifies its work, runs the copy as a sandboxed dev instance (at
+http://dev.localhost:7777, sharing the live model) and commits. `self branch` brings the result back here as a branch
+to review and merge. `AGENTS.md` is the codebase map the agent reads in every run there. Details: [sdk/README.md](sdk/README.md).
 
 ## The agent loop
 
