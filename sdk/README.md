@@ -34,6 +34,7 @@ node sdk/cli.ts self run "research low-latency speech-to-text options and add a 
 node sdk/cli.ts self dev start     # run the copy; open http://dev.localhost:7777
 node sdk/cli.ts self diff          # what the agent changed
 node sdk/cli.ts self branch        # bring it back here as a branch: review with git diff, then merge
+node sdk/cli.ts self branch echo-self/live-chat --pr   # same, then push it to GitHub and print the pull request link
 node sdk/cli.ts self sync          # after merging, fast-forward the copy to continue from there
 ```
 
@@ -58,7 +59,11 @@ What happens:
     an STT test.
 - **You merge.** `self branch` commits what is left in the copy onto a new branch there and fetches it into this
   repo; your checkout is not touched. Review it with `git diff HEAD...<branch>`, merge it, then rebuild Echo
-  (`docker compose up -d --build`).
+  (`docker compose up -d --build`). With `--pr` it also pushes the branch to `origin` and prints the GitHub link that
+  opens the pull request (no `gh` needed); merge it there, `git pull`, and rebuild. Running `self branch <same name>`
+  again adds the copy's newer work to that branch (and with `--pr` pushes it, updating the pull request).
+- **New models go into the copy.** The copy's `models/` holds one link per live model folder; a model its code
+  downloads (a new `models/<name>`) lands in the copy. After the merge, the live Echo downloads it on first use.
 
 The copy's path on this machine and inside Echo come from `.env` (`PROJECTS_DIR`, `PROJECTS_MOUNT`); override them
 with `--dir` and `--mount` (or `ECHO_SELF_DIR` and `ECHO_SELF_MOUNT`).

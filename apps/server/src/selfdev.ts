@@ -2,7 +2,7 @@
 // folder, never the live tree), checks it with verify(), and runs it as a dev instance next to the live Echo:
 // sandboxed, on its own ports, using the live Echo's engines, and shown at http://dev.localhost:<ui port>.
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, unlinkSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
@@ -38,9 +38,13 @@ function requireCheckout(dir: string): string {
 // ---------- linking a working copy to the live install's dependencies ----------
 
 /** What a fresh clone lacks (all git-ignored): dependencies, models, Python venvs and llama.cpp. Linking them to
- *  the live install makes the clone runnable at once, without downloading anything. */
+ *  the live install makes the clone runnable at once, without downloading anything. `models/` is a real folder in
+ *  the copy with one link per model folder of the live install, so a model the copy's code downloads (a new
+ *  models/<name>) lands in the copy, which is writable, while the live models stay read-only. */
 function linkTargets(): string[] {
-  const rels = ["node_modules", "models", "vendor/llama.cpp"];
+  const rels = ["node_modules", "vendor/llama.cpp"];
+  const models = path.join(ROOT, "models");
+  if (existsSync(models)) for (const m of readdirSync(models)) rels.push(`models/${m}`);
   for (const s of readdirSync(path.join(ROOT, "services"))) if (existsSync(path.join(ROOT, "services", s, ".venv"))) rels.push(`services/${s}/.venv`);
   return rels;
 }
@@ -57,6 +61,14 @@ export interface LinkReport {
 export function linkCheckout(dir: string): LinkReport {
   const root = requireCheckout(dir);
   const r: LinkReport = { dir: root, linked: [], kept: [], notes: [] };
+  // Copies linked before models/ held one link per model had a single link to the whole folder: replace it
+  const modelsLink = path.join(root, "models");
+  try {
+    if (lstatSync(modelsLink).isSymbolicLink() && readlinkSync(modelsLink) === path.join(ROOT, "models")) {
+      unlinkSync(modelsLink);
+      r.notes.push("models/ is now a folder of links to the live models, so new models download into the copy");
+    }
+  } catch {}
   for (const rel of linkTargets()) {
     const target = path.join(ROOT, rel);
     const link = path.join(root, rel);

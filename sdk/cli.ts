@@ -23,7 +23,8 @@ const HELP = `Echo SDK command line (talks to Echo at $ECHO_URL, default http://
   node sdk/cli.ts self verify [--only server,web,tests,python]
   node sdk/cli.ts self dev start|restart|stop|status|logs [--no-build]   the copy, live at http://dev.localhost:7777
   node sdk/cli.ts self diff [--full]        what the copy changed since it was cloned or synced
-  node sdk/cli.ts self branch [name] [-m msg]  commit the copy's changes and fetch them here as a branch to review
+  node sdk/cli.ts self branch [name] [-m msg] [--pr]  commit the copy's changes and fetch them here as a branch to review;
+                                            --pr also pushes it to GitHub and prints the pull request link
   node sdk/cli.ts self sync                 fast-forward the copy to this repo's current branch
 
 Run options:
@@ -45,7 +46,7 @@ const opts = {
   instructions: { type: "string" }, approve: { type: "string" }, hitl: { type: "string" }, chat: { type: "boolean" },
   stream: { type: "boolean" }, thinking: { type: "boolean" }, json: { type: "boolean" }, quiet: { type: "boolean" },
   detach: { type: "boolean" }, from: { type: "string" }, only: { type: "string" }, full: { type: "boolean" },
-  "no-build": { type: "boolean" }, message: { type: "string", short: "m" }, dir: { type: "string" }, mount: { type: "string" },
+  "no-build": { type: "boolean" }, message: { type: "string", short: "m" }, dir: { type: "string" }, mount: { type: "string" }, pr: { type: "boolean" },
   url: { type: "string" }, help: { type: "boolean", short: "h" },
 } as const;
 const { values: o, positionals } = parseArgs({ options: opts, allowPositionals: true });
@@ -276,6 +277,24 @@ const tryGit = (dir: string, ...args: string[]) => {
   }
 };
 
+/** Push a branch of this repo to GitHub and print the link that opens a pull request for it (no gh CLI needed). */
+async function pullRequest(name: string) {
+  const remote = tryGit(REPO, "remote", "get-url", "origin");
+  if (!remote) throw new Error("this repo has no origin remote to open a pull request on");
+  const base = git(REPO, "rev-parse", "--abbrev-ref", "HEAD");
+  tryGit(REPO, "fetch", "--quiet", "origin", base);
+  // a pull request shows every commit its branch has beyond the base branch on GitHub
+  const unpushed = tryGit(REPO, "rev-list", "--count", `origin/${base}..${base}`);
+  if (unpushed && unpushed !== "0") {
+    out(yellow(`Note: your ${base} has ${unpushed} commit(s) GitHub does not have yet; the pull request will list them too unless you push ${base} first (git push origin ${base}).`));
+  }
+  git(REPO, "push", "--quiet", "-u", "origin", name);
+  const repo = /github\.com[:/](.+?)(?:\.git)?\/?$/.exec(remote)?.[1];
+  out(`\nPushed ${cyan(name)} to origin.`);
+  out(repo ? `Open the pull request: https://github.com/${repo}/compare/${base}...${name}?expand=1` : `Open a pull request for ${name} on ${remote}.`);
+  out(`After merging it there: git pull, then rebuild Echo (docker compose up -d --build).`);
+}
+
 /** The commit the copy's work starts from: where it last met this repo. */
 function selfBase(host: string): string {
   return tryGit(host, "merge-base", "HEAD", "@{upstream}") ?? tryGit(host, "merge-base", "HEAD", "origin/HEAD") ?? git(host, "rev-list", "--max-parents=0", "HEAD");
@@ -345,14 +364,20 @@ async function self(sub: string | undefined, rest: string[]) {
       const base = selfBase(host);
       git(host, "add", "-A");
       const staged = tryGit(host, "diff", "--cached", "--quiet") === undefined;
-      if (!staged && git(host, "rev-list", "--count", `${base}..HEAD`) === "0") return out("The working copy has no changes to bring back.");
-      git(host, "switch", "-c", name);
+      // Run again on the copy's current branch, it adds any new work to that branch (and --pr publishes it)
+      const onIt = git(host, "rev-parse", "--abbrev-ref", "HEAD") === name;
+      if (!onIt && !staged && git(host, "rev-list", "--count", `${base}..HEAD`) === "0") return out("The working copy has no changes to bring back.");
+      if (!onIt) git(host, "switch", "-c", name);
       if (staged) git(host, "commit", "--quiet", "-m", o.message ?? `Echo self-work (${new Date().toISOString().slice(0, 10)})`);
       git(REPO, "fetch", "--quiet", host, `${name}:${name}`);
       out(`Branch ${cyan(name)} is now in ${REPO} (your checkout is unchanged):\n`);
       out(git(REPO, "log", "--oneline", `HEAD..${name}`));
       out(`\n${git(REPO, "diff", "--stat", `HEAD...${name}`)}`);
-      out(`\nReview: git diff HEAD...${name}\nMerge:  git merge ${name}\nThe copy stays on ${name}; keep working there, or \`node sdk/cli.ts self sync\` after you merge.`);
+      if (!o.pr) {
+        out(`\nReview: git diff HEAD...${name}\nMerge:  git merge ${name}, then rebuild: docker compose up -d --build`);
+        out(`Or open a pull request on GitHub: node sdk/cli.ts self branch ${name} --pr`);
+      } else await pullRequest(name);
+      out(`The copy stays on ${name}; keep working there, or \`node sdk/cli.ts self sync\` after you merge.`);
       return;
     }
     case "sync": {

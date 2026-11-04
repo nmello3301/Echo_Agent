@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -259,6 +259,20 @@ describe("self-work", () => {
     assert.equal(readFileSync(path.join(dir, ".git/info/exclude"), "utf8").match(/^\/node_modules$/gm)?.length, 1);
     assert.throws(() => linkCheckout(ROOT), /live Echo/);
     assert.throws(() => linkCheckout(tmp), /not an Echo working copy/);
+  });
+
+  test("a copy's models/ is its own folder of links, so new models download into the copy", { skip: !existsSync(path.join(ROOT, "models")) && "no models folder here" }, async () => {
+    const { linkCheckout } = await import("../src/selfdev.ts");
+    const dir = fakeCheckout();
+    symlinkSync(path.join(ROOT, "models"), path.join(dir, "models")); // how copies were linked at first
+    const r = linkCheckout(dir);
+    assert.ok(!lstatSync(path.join(dir, "models")).isSymbolicLink(), "the old single link is replaced by a folder");
+    assert.match(r.notes.join(" "), /folder of links/);
+    for (const m of readdirSync(path.join(ROOT, "models"))) {
+      assert.equal(readlinkSync(path.join(dir, "models", m)), path.join(ROOT, "models", m));
+    }
+    writeFileSync(path.join(dir, "models", "new-model.bin"), "x"); // lands in the copy, not the live install
+    assert.ok(!existsSync(path.join(ROOT, "models", "new-model.bin")));
   });
 
   test("a dev instance shifts its own ports and keeps the live Echo's shared ones", () => {
