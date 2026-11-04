@@ -45,7 +45,7 @@ export interface DecisionModel {
 
 export interface EchoConfig {
   host: string;
-  ports: { ui: number; decision: number; search: number; embed: number; rerank: number; hugin: number; tts: number };
+  ports: { ui: number; decision: number; search: number; embed: number; rerank: number; hugin: number; tts: number; stt?: number };
   paths: { data: string; evals: string; llama_server: string };
   default_model: string;
   agent: {
@@ -59,8 +59,8 @@ export interface EchoConfig {
   notify: { desktop: boolean; ntfy_url: string };
   monitor: { interval_ms: number };
   notes: { dirs: string[]; hugin_dir: string };
-  /** Hugin's speech-to-text service (faster-whisper, distil-large-v3 int8 on CPU). */
-  stt_url?: string;
+  /** Live tab: speech-to-text model and CPU threads (services/stt), and the answers' default thinking level and voice */
+  live?: { stt_model?: string; stt_threads?: number; effort?: string; voice?: string };
   /** Git tab: folders whose git repositories it shows, and GitHub repositories ("owner/name") for pull requests */
   git?: { dirs?: string[]; github?: string[] };
 }
@@ -102,7 +102,6 @@ export const dockerEnv = {
   externalServices: process.env.ECHO_EXTERNAL_SERVICES === "1",
   searchUrl: process.env.ECHO_SEARCH_URL,
   huginUrl: process.env.ECHO_HUGIN_URL,
-  sttUrl: process.env.STT_URL,
 };
 
 export function abs(p: string): string {

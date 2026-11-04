@@ -1,29 +1,44 @@
-// Live chat: the server side of the voice turn loop (see docs/live-chat.md).
-// A turn is one user utterance: STT text -> main model answer (streamed) -> Piper TTS per sentence,
-// with the audio coming back to the browser as SSE events.
-import { config, dockerEnv } from "./config.ts";
+// Live tab: hands-free voice chat (docs/live-chat.md). One turn: the user's utterance (WAV) → speech to text
+// (services/stt, faster-whisper on the CPU) → the main model, streamed → speakable chunks → text to speech (Piper)
+// per chunk, each sent back the moment it is ready, so Echo starts talking while the model is still writing.
+import { Hono } from "hono";
+import { config } from "./config.ts";
+import { startStt } from "./engines.ts";
 
-/** The speech-to-text service: Hugin's `stt` container (faster-whisper, distil-large-v3 int8 on CPU,
- * English). In Docker the compose file points STT_URL at the sibling service; on the host it is a
- * published port. */
-export function sttUrl(): string {
-  return dockerEnv.sttUrl ?? config.echo.stt_url ?? "http://stt:8089";
-}
+const sttUrl = () => `http://127.0.0.1:${config.echo.ports.stt ?? 8096}`;
 
 export interface Transcription {
   text: string;
-  /** Milliseconds the /transcribe request took, model included. */
+  /** Time the service spent, decoding included */
   ms: number;
+  audio_s: number;
 }
 
-/** Transcribe a WAV (any sample rate; faster-whisper resamples) against the stt service. */
-export async function transcribe(wav: Uint8Array, name = "utterance.wav"): Promise<Transcription> {
-  const form = new FormData();
-  form.append("file", new Blob([Buffer.from(wav)], { type: "audio/wav" }), name);
-  const t0 = performance.now();
-  const r = await fetch(`${sttUrl()}/transcribe`, { method: "POST", body: form });
-  const ms = Math.round(performance.now() - t0);
-  if (!r.ok) throw new Error(`STT answered ${r.status}: ${(await r.text()).slice(0, 200)}`);
-  const j = (await r.json()) as { text?: string };
-  return { text: (j.text ?? "").trim(), ms };
+/** Transcribe one utterance (16 kHz mono 16-bit WAV is fastest) with Echo's speech-to-text service. */
+export async function transcribe(wav: Uint8Array, signal?: AbortSignal): Promise<Transcription> {
+  await startStt(); // returns at once when it is running
+  const r = await fetch(`${sttUrl()}/transcribe`, { method: "POST", body: wav as Uint8Array<ArrayBuffer>, signal });
+  const j = (await r.json().catch(() => ({}))) as Partial<Transcription> & { error?: string };
+  if (!r.ok) throw new Error(`speech to text: ${j.error ?? r.status}`);
+  return { text: (j.text ?? "").trim(), ms: j.ms ?? 0, audio_s: j.audio_s ?? 0 };
 }
+
+export const liveApp = new Hono();
+const err = (e: unknown) => ({ error: (e as Error).message ?? String(e) });
+
+/** The defaults the Live tab starts with (echo.yaml `live`). */
+liveApp.get("/config", (c) => {
+  const live = config.echo.live ?? {};
+  return c.json({ effort: live.effort ?? "off", voice: live.voice ?? "piper:en_US-lessac-medium", sttModel: live.stt_model ?? "base.en" });
+});
+
+/** Speech to text only, for tests: the WAV as the request body. */
+liveApp.post("/stt", async (c) => {
+  const wav = new Uint8Array(await c.req.arrayBuffer());
+  if (!wav.length) return c.json({ error: "no audio" }, 400);
+  try {
+    return c.json(await transcribe(wav));
+  } catch (e) {
+    return c.json(err(e), 502);
+  }
+});

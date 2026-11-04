@@ -37,7 +37,8 @@ RUN git clone -q --depth 1 --branch ${STRATA_VERSION} https://github.com/Niko122
 COPY services/decision/requirements.txt services/decision/
 COPY services/pyworkspace/requirements.txt services/pyworkspace/
 COPY services/tts/requirements.txt services/tts/
-RUN for s in decision pyworkspace tts; do \
+COPY services/stt/requirements.txt services/stt/
+RUN for s in decision pyworkspace tts stt; do \
       python3 -m venv services/$s/.venv && services/$s/.venv/bin/pip install -q --no-cache-dir -r services/$s/requirements.txt || exit 1; \
     done
 

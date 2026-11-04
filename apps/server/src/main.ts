@@ -13,10 +13,10 @@ import { config, dockerEnv, ROOT } from "./config.ts";
 import { db, now } from "./db.ts";
 import { decisions, type Questions } from "./decision.ts";
 import { buildStrata, cancelDownload, catalogStatus, startDownload } from "./downloads.ts";
-import { activeMain, activeMainId, allEngines, engineById, huginEnv, startDecision, startHugin, startRag, startSearch, startTts, stopAll, useMainModel } from "./engines.ts";
+import { activeMain, activeMainId, allEngines, engineById, huginEnv, startDecision, startHugin, startRag, startSearch, startStt, startTts, stopAll, useMainModel } from "./engines.ts";
 import { gitApp } from "./gitview.ts";
 import { type Effort, effortFields, type StreamResult, streamChat } from "./llm.ts";
-import { sttUrl, transcribe } from "./live.ts";
+import { liveApp } from "./live.ts";
 import { lastSample, startMonitor } from "./monitor.ts";
 import { formatSources, indexStatus, listNotes, readNote, searchNotes, startIndexer, syncIndex } from "./rag.ts";
 import { dev, isDevHost, linkCheckout, proxyHttp, proxyUpgrade, verify, type VerifyStep } from "./selfdev.ts";
@@ -479,32 +479,8 @@ app.delete("/api/read/voices/:id", async (c) => {
   }
 });
 
-// ---------- Live tab: voice turns (see docs/live-chat.md) ----------
-/** Phase-2 probe: transcribe a WAV upload against the stt service and report the time it took. */
-app.post("/api/live/stt", async (c) => {
-  // The browser POSTs the WAV as a plain body; multipart 'file' works too (handy with curl).
-  const wav = await new Promise<Uint8Array>((resolve, reject) => {
-    const ctype = c.req.header("content-type") ?? "";
-    if (ctype.includes("multipart/form-data")) {
-      c.req.formData().then((form) => {
-        const file = form.get("file");
-        if (file instanceof File && file.size) return file.arrayBuffer();
-        throw new Error("expected a file (multipart field 'file')");
-      }).then((b) => resolve(new Uint8Array(b)), reject);
-    } else {
-      c.req.arrayBuffer().then((b) => resolve(new Uint8Array(b)), reject);
-    }
-  });
-  if (!wav.length) return c.json({ error: "no audio" }, 400);
-  try {
-    const { text, ms } = await transcribe(wav);
-    return c.json({ text, ms, stt: sttUrl() });
-  } catch (e) {
-    const cause = (e as { cause?: unknown })?.cause;
-    const msg = cause instanceof Error ? `${e} (${cause.message})` : err(e).error;
-    return c.json({ error: `STT at ${sttUrl()}: ${msg}` }, 502);
-  }
-});
+// ---------- Live tab: hands-free voice chat (live.ts) ----------
+app.route("/api/live", liveApp);
 
 app.get("/api/rules", (c) => c.json({ path: path.join(ROOT, "rules.md"), text: readFileSync(path.join(ROOT, "rules.md"), "utf8") }));
 
@@ -580,6 +556,7 @@ startSearch().catch((e) => console.error("[search]", e.message));
 startRag().then(() => startIndexer()).catch((e) => console.error("[rag]", e.message));
 startHugin().catch((e) => console.error("[hugin]", e.message));
 startTts().catch((e) => console.error("[tts]", e.message));
+startStt().catch((e) => console.error("[stt]", e.message));
 useMainModel(process.env.ECHO_MODEL ?? config.echo.default_model).catch((e) => console.error("[engines]", e.message));
 
 let shuttingDown = false;

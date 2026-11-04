@@ -8,6 +8,7 @@ ports:
   rerank: 8094        # notes RAG: Qwen3-Reranker-0.6B
   hugin: 8088         # Hugin voice notes (Docker stack in vendor/HuginVoiceNotes)
   tts: 8095           # Read tab: Piper text-to-speech (services/tts)
+  stt: 8096           # Live tab: faster-whisper speech-to-text (services/stt)
 
 paths:
   data: data          # SQLite, logs, Pi state
@@ -40,9 +41,13 @@ notes:
     - data/hugin/notes
   hugin_dir: vendor/HuginVoiceNotes
 
-# Hugin's speech-to-text service (faster-whisper, distil-large-v3 int8 on CPU). In Docker the compose
-# file points Echo at the sibling service (STT_URL=http://stt:8089).
-stt_url: "http://stt:8089"  # Hugin's STT service, on the compose network
+# Live tab: hands-free voice chat. Speech to text runs on the CPU (services/stt, faster-whisper): base.en
+# transcribes a short question in ~0.35 s on 8 threads; small.en takes ~0.9 s and gained nothing on clear speech.
+live:
+  stt_model: base.en
+  stt_threads: 8              # 16 was slower than 8 (the threads compete)
+  effort: "off"               # answers' thinking level; off starts speaking soonest (docs/benchmarks.md)
+  voice: piper:en_US-lessac-medium
 
 monitor:
   interval_ms: 1000
