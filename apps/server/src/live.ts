@@ -5,14 +5,127 @@ import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { config, type MainModel } from "./config.ts";
+import { db, now } from "./db.ts";
+import { type Answer, decisions, type Questions } from "./decision.ts";
 import { activeMain, activeMainId, startStt, useMainModel } from "./engines.ts";
-import { type Effort, effortFields, streamChat } from "./llm.ts";
+import { type Effort, effortFields, type StreamResult, streamChat, type ToolCall } from "./llm.ts";
+import { chatWithWeb } from "./webchat.ts";
 
 const SYSTEM = `You are Echo, talking with the user by voice: everything you write is spoken aloud.
 - Answer in one to three short sentences of plain spoken English, starting with the answer itself.
 - No markdown, lists, headings, code, emoji or links. Write numbers, units and symbols the way they are said.
 - If a full answer would be long, give the gist and offer to say more.
-- If the user's words make no sense (a speech recognition slip), say what you heard and ask them to repeat.`;
+- If the user's words make no sense (a speech recognition slip), say what you heard and ask them to repeat.
+- You can hand a question to the chat model (ask_chat) or the decide model (decide). Answer directly whenever a few
+  sentences will do. Use ask_chat for questions that need careful reasoning, current facts or a detailed answer, and
+  decide when the user wants a judgement or a decision. Always use them when the user asks you to.`;
+
+// The voice model's tools: the Chat tab's model (thinking, optionally the web) and the Decide tab's model
+const LIVE_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "ask_chat",
+      description: "Hand a question to the chat model, which thinks it through carefully (and can search the web) and writes a full answer. " +
+        "It takes several seconds. For questions that need careful reasoning, up-to-date facts or detail.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "The question, written to stand on its own (include what was said before if it matters)" },
+          web: { type: "boolean", description: "Search the web first: for news, prices, schedules and other current facts" },
+        },
+        required: ["question"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "decide",
+      description: "Ask the decide model, a small model trained to judge, for a calibrated probability: yes or no, or which of a few options. " +
+        "For decisions and judgements (should I..., which is better..., is it likely...).",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "The yes/no question or the decision, with the facts that matter" },
+          options: { type: "array", items: { type: "string" }, description: "2 to 6 options to choose from; leave out for a yes/no question" },
+        },
+        required: ["question"],
+      },
+    },
+  },
+];
+const CHAT_EFFORT: Effort = "medium";
+
+/** The Decide tab's question format for a spoken decision: a choice between options, or yes/no. */
+export function decideQuestions(question: string, options?: unknown): Questions {
+  const opts = (Array.isArray(options) ? options : []).map(String).map((o) => o.trim()).filter(Boolean).slice(0, 6);
+  if (opts.length >= 2) {
+    return { answer: { type: "choice", instructions: question, criteria: Object.fromEntries(opts.map((o, i) => [String.fromCharCode(65 + i), o])) } };
+  }
+  return { answer: { type: "noul", instructions: question, criteria: { true: "yes", false: "no" } } };
+}
+
+/** The decide model's answer in words, for the voice model to summarize. */
+export function describeDecision(a: Answer | undefined, options?: unknown): string {
+  if (!a) return "no answer";
+  if (a.type === "noul") {
+    const p = a.noul ?? 0;
+    return `${p >= 0.5 ? "yes" : "no"} (probability of yes: ${Math.round(p * 100)} percent)`;
+  }
+  const opts = (Array.isArray(options) ? options : []).map(String);
+  return Object.entries(a.probabilities ?? {}).sort((x, y) => y[1] - x[1])
+    .map(([k, v]) => `${opts[k.charCodeAt(0) - 65] ?? k}: ${Math.round(v * 100)} percent`).join(", ");
+}
+
+/** Does the spoken summary say which model it checked? (The user always hears it.) */
+export const mentionsModel = (text: string, model: "chat" | "decide") => new RegExp(`\\b(?:${model === "chat" ? "chat" : "decide|decision"}) model\\b`, "i").test(text);
+
+interface ToolUse {
+  model: "chat" | "decide";
+  /** What goes back to the voice model */
+  result: string;
+  detail: Record<string, unknown>;
+  ms: number;
+}
+
+/** Keep a chat-model answer in the Chat tab, where the user can read it in full. */
+function saveChat(question: string, res: StreamResult, modelId: string): string {
+  const id = randomUUID();
+  db.prepare("INSERT INTO conversations (id, title, model, created_at, updated_at) VALUES (?,?,?,?,?)").run(id, `Live: ${question.slice(0, 54)}`, modelId, now(), now());
+  db.prepare("INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?,?,?,?)").run(id, "user", JSON.stringify(question), now());
+  db.prepare("INSERT INTO messages (conversation_id, role, content, reasoning, stats, created_at) VALUES (?,?,?,?,?,?)")
+    .run(id, "assistant", JSON.stringify(res.content), res.reasoning || null, JSON.stringify({ ...res.timings, model: modelId, effort: CHAT_EFFORT, source: "live" }), now());
+  return id;
+}
+
+async function runTool(call: ToolCall, lastQuestion: string, signal: AbortSignal): Promise<ToolUse> {
+  const t = performance.now();
+  let args: Record<string, unknown> = {};
+  try {
+    args = JSON.parse(call.function.arguments || "{}");
+  } catch {}
+  const question = String(args.question ?? "").trim() || lastQuestion;
+  if (call.function.name === "decide") {
+    const d = await decisions.decide({ question, asked_by_voice: lastQuestion }, decideQuestions(question, args.options), { source: "live" });
+    const said = describeDecision(d.answers.answer, args.options);
+    return {
+      model: "decide", detail: { question, answer: said }, ms: Math.round(performance.now() - t),
+      result: `The decide model's answer to "${question}": ${said}. Tell the user in one or two short spoken sentences, then say you checked the decide model.`,
+    };
+  }
+  const m = await mainModel();
+  const req = { messages: [{ role: "user", content: question }], ...effortFields(m, CHAT_EFFORT), cache_prompt: true };
+  const res: StreamResult = args.web
+    ? await chatWithWeb(m, req, async () => {}, async () => {}, signal, 1)
+    : await streamChat(m, req, () => {}, signal, "live-chat");
+  const conversationId = saveChat(question, res, m.id);
+  return {
+    model: "chat", detail: { question, conversationId, web: !!args.web, chars: res.content.length }, ms: Math.round(performance.now() - t),
+    result: `The chat model's full answer:\n${res.content.slice(0, 6000)}\n\nSummarize it for the user in two or three short spoken sentences, ` +
+      "then say you checked the chat model and that the full answer is in the Chat tab.",
+  };
+}
 
 const MAX_MESSAGES = 40; // 20 exchanges; older ones drop off the front
 const SESSION_TTL_MS = 2 * 60 * 60_000;
@@ -162,19 +275,47 @@ liveApp.post("/turn", async (c) => {
           await send("audio", { seq: i, text, wav: Buffer.from(audio).toString("base64") });
         });
       };
-      const chunker = new Chunker();
+      let chunker = new Chunker();
       const llm0 = performance.now();
-      const res = await streamChat(m, {
-        messages: [{ role: "system", content: SYSTEM }, ...s.messages],
-        ...effortFields(m, effort), max_tokens: effort === "off" ? 400 : 1500, cache_prompt: true,
-      }, (d) => {
+      const onDelta = (d: { content?: string }) => {
         if (!d.content) return;
         timings.firstToken ??= Math.round(performance.now() - llm0);
         void send("delta", { text: d.content });
         for (const chunk of chunker.push(d.content)) speak(chunk);
-      }, ac.signal, "live");
-      const rest = chunker.flush();
-      if (rest) speak(rest);
+      };
+      const history = [{ role: "system", content: SYSTEM }, ...s.messages];
+      let res = await streamChat(m, {
+        messages: history, tools: LIVE_TOOLS,
+        ...effortFields(m, effort), max_tokens: effort === "off" ? 400 : 1500, cache_prompt: true,
+      }, onDelta, ac.signal, "live");
+      const call = res.toolCalls[0];
+      if (call?.function.name && !res.aborted) {
+        // say it is thinking right away, ask the other model, then come back with a summary that names it
+        const said = chunker.flush();
+        if (said) speak(said);
+        if (seq === 0) speak(call.function.name === "decide" ? "Let me weigh that up." : "Let me think about that.");
+        await send("tool", { name: call.function.name, model: call.function.name === "decide" ? "decide" : "chat" });
+        const used = await runTool(call, heard.text, ac.signal);
+        timings.tool = used.ms;
+        await send("tool", { name: call.function.name, model: used.model, ms: used.ms, ...used.detail });
+        chunker = new Chunker();
+        res = await streamChat(m, {
+          messages: [...history, { role: "assistant", content: res.content, tool_calls: [{ ...call, id: call.id || "call_0" }] },
+            { role: "tool", tool_call_id: call.id || "call_0", content: used.result }],
+          ...effortFields(m, "off"), max_tokens: 400, cache_prompt: true,
+        }, onDelta, ac.signal, "live");
+        const rest = chunker.flush();
+        if (rest) speak(rest);
+        if (!mentionsModel(res.content, used.model)) {
+          const note = `I checked the ${used.model} model.`;
+          speak(note);
+          void send("delta", { text: ` ${note}` });
+          res.content = `${res.content.trim()} ${note}`;
+        }
+      } else {
+        const rest = chunker.flush();
+        if (rest) speak(rest);
+      }
       timings.llm = Math.round(performance.now() - llm0);
       await speaking;
       timings.total = at();
@@ -197,7 +338,7 @@ liveApp.post("/warm", async (c) => {
     const t = performance.now();
     const voice = c.req.query("voice") || config.echo.live?.voice;
     await Promise.all([
-      streamChat(m, { messages: [{ role: "system", content: SYSTEM }, { role: "user", content: "Hello." }], ...effortFields(m, "off"), max_tokens: 1, cache_prompt: true }, () => {}, new AbortController().signal, "live"),
+      streamChat(m, { messages: [{ role: "system", content: SYSTEM }, { role: "user", content: "Hello." }], tools: LIVE_TOOLS, ...effortFields(m, "off"), max_tokens: 1, cache_prompt: true }, () => {}, new AbortController().signal, "live"),
       synth("Ready.", voice, AbortSignal.timeout(60_000)), // loads the voice (a cold first sentence took ~0.9 s)
     ]);
     return c.json({ ok: true, ms: Math.round(performance.now() - t) });
@@ -215,7 +356,7 @@ liveApp.post("/prime", async (c) => {
     const s = sessions.get(c.req.query("session") ?? "");
     const t = performance.now();
     await streamChat(m, {
-      messages: [{ role: "system", content: SYSTEM }, ...(s?.messages ?? []), { role: "user", content: "…" }],
+      messages: [{ role: "system", content: SYSTEM }, ...(s?.messages ?? []), { role: "user", content: "…" }], tools: LIVE_TOOLS,
       ...effortFields(m, "off"), max_tokens: 1, cache_prompt: true,
     }, () => {}, new AbortController().signal, "live");
     return c.json({ ok: true, ms: Math.round(performance.now() - t) });

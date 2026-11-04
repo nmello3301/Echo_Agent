@@ -355,6 +355,23 @@ describe("live chat", () => {
     const { speakable } = await import("../src/live.ts");
     assert.equal(speakable("**Yes** — see https://x.y/z for `code` & more:\n- one\n- two"), "Yes — see a link for code and more: one two");
   });
+
+  test("a spoken decision becomes the Decide tab's question and comes back in words", async () => {
+    const { decideQuestions, describeDecision } = await import("../src/live.ts");
+    assert.deepEqual(decideQuestions("Rain tomorrow?"), { answer: { type: "noul", instructions: "Rain tomorrow?", criteria: { true: "yes", false: "no" } } });
+    assert.deepEqual(decideQuestions("Which?", ["tea", " ", "coffee"]).answer.criteria, { A: "tea", B: "coffee" }, "blank options are dropped");
+    assert.equal(decideQuestions("Which?", ["only one"]).answer.type, "noul", "one option is not a choice");
+    assert.equal(describeDecision({ type: "noul", noul: 0.27 }), "no (probability of yes: 27 percent)");
+    assert.equal(describeDecision({ type: "choice", probabilities: { A: 0.2, B: 0.8 } }, ["tea", "coffee"]), "coffee: 80 percent, tea: 20 percent");
+  });
+
+  test("the summary names the model it checked", async () => {
+    const { mentionsModel } = await import("../src/live.ts");
+    assert.ok(mentionsModel("I checked the Chat model.", "chat"));
+    assert.ok(mentionsModel("The decision model says yes.", "decide"));
+    assert.ok(!mentionsModel("You should decide soon.", "decide"), "the verb alone does not name the model");
+    assert.ok(!mentionsModel("I checked the decide model.", "chat"));
+  });
 });
 
 describe("context", () => {

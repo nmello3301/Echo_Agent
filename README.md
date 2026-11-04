@@ -167,6 +167,12 @@ to be sure you have finished; pick 0.4, 0.5 or 0.7 s). **Thinking off** answers 
 first (better on hard questions, ~1.5 s+ slower). **Interrupt** stops it mid-answer, **New conversation** forgets
 the conversation. Each turn shows its delay and where the time went.
 
+For harder questions the voice hands off to another model, says so ("Let me think about that"), and comes back
+with a short spoken summary that names the model it checked. The **chat model** (the Chat tab's model, thinking at
+medium, with web search for current facts) writes a full answer in ~10-20 s; that answer is saved in the Chat tab
+as a "Live: ..." conversation. The **decide model** (Jebadiah, as in the Decide tab) gives a yes/no probability or
+odds between options in ~1-5 s. Ask for either by name ("ask the decide model ..."), or let the voice choose.
+
 Speech to text is Echo's own (`services/stt`: faster-whisper `base.en` on 8 CPU threads, ~0.35 s for a short
 question; its weights, ~145 MB, download into `models/stt/` on first use); the voices are the Read tab's Piper
 voices. Settings: `live` in `echo.yaml`. English only for now. Details: [docs/live-chat.md](docs/live-chat.md).
