@@ -39,7 +39,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 from urllib.parse import unquote
 
 import numpy as np
@@ -244,7 +244,12 @@ def wav_bytes(audio, rate: int) -> bytes:
 
 # ---------- Qwen3-TTS and VoxCPM2: the worker process ----------
 def die_with_parent() -> None:
-    ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG: no orphaned models
+    # PR_SET_PDEATHSIG: no orphaned models. Linux sends it when the *thread* that started the child ends, so the worker
+    # is started and driven from worker_thread, which lives as long as the service (request threads do not).
+    ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)
+
+
+worker_thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts-worker")
 
 
 TORCH_ENGINES = ("qwen3", "voxcpm")
@@ -252,36 +257,58 @@ TORCH_ENGINES = ("qwen3", "voxcpm")
 
 class Worker:
     """The PyTorch models' process (worker.py in services/tts-torch/.venv), started on first use; each model loads on
-    its first request and stays. One request at a time: a JSON line in on stdin, a JSON line back on stdout."""
+    its first request. One request at a time: a JSON line in on stdin, a JSON line back on stdout. It holds several GB
+    of RAM (VoxCPM2 ~6 GB), so it stops after IDLE_S without a request; the next one starts it again (~10 s)."""
 
     venv = ROOT / "services" / "tts-torch"
+    IDLE_S = 600
 
     def __init__(self):
         self.proc: subprocess.Popen | None = None
-        self.lock = Lock()
+        self.last = 0.0
+        Thread(target=self._watch, daemon=True).start()
 
     def running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
     def call(self, req: dict) -> dict:
-        with self.lock:
-            if not self.running():
-                python = self.venv / ".venv" / "bin" / "python"
-                if not python.exists():
-                    raise BadRequest("Qwen3-TTS and VoxCPM need their Python environment (services/tts-torch/.venv): rebuild "
-                                     "Echo's image, or natively: python3 -m venv services/tts-torch/.venv && "
-                                     "services/tts-torch/.venv/bin/pip install -r services/tts-torch/requirements.txt")
-                print("tts: starting the PyTorch worker (Qwen3-TTS, VoxCPM) ...", flush=True)
-                self.proc = subprocess.Popen(
-                    [str(python), str(Path(__file__).with_name("worker.py")), "--models-dir", str(voices_dir), "--clones-dir", str(clones_dir)],
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, preexec_fn=die_with_parent)
-            assert self.proc.stdin and self.proc.stdout
-            self.proc.stdin.write(json.dumps(req) + "\n")
-            self.proc.stdin.flush()
-            line = self.proc.stdout.readline()
-            if not line:
-                self.proc = None
-                raise RuntimeError("the PyTorch TTS worker stopped (see the TTS engine's log)")
+        return worker_thread.submit(self._call, req).result()
+
+    def _watch(self) -> None:
+        while True:
+            time.sleep(60)
+            worker_thread.submit(self._stop_if_idle)  # on worker_thread: never in the middle of a request
+
+    def _stop_if_idle(self) -> None:
+        if self.running() and time.monotonic() - self.last > self.IDLE_S:
+            print(f"tts: stopping the PyTorch worker ({self.IDLE_S // 60} min unused, frees its memory)", flush=True)
+            assert self.proc and self.proc.stdin
+            self.proc.stdin.close()  # it exits at the end of its input
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            self.proc = None
+
+    def _call(self, req: dict) -> dict:
+        self.last = time.monotonic()
+        if not self.running():
+            python = self.venv / ".venv" / "bin" / "python"
+            if not python.exists():
+                raise BadRequest("Qwen3-TTS and VoxCPM need their Python environment (services/tts-torch/.venv): rebuild "
+                                 "Echo's image, or natively: python3 -m venv services/tts-torch/.venv && "
+                                 "services/tts-torch/.venv/bin/pip install -r services/tts-torch/requirements.txt")
+            print("tts: starting the PyTorch worker (Qwen3-TTS, VoxCPM) ...", flush=True)
+            self.proc = subprocess.Popen(
+                [str(python), str(Path(__file__).with_name("worker.py")), "--models-dir", str(voices_dir), "--clones-dir", str(clones_dir)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, preexec_fn=die_with_parent)
+        assert self.proc.stdin and self.proc.stdout
+        self.proc.stdin.write(json.dumps(req) + "\n")
+        self.proc.stdin.flush()
+        line = self.proc.stdout.readline()
+        if not line:
+            self.proc = None
+            raise RuntimeError("the PyTorch TTS worker stopped (see the TTS engine's log)")
         res = json.loads(line)
         if "error" in res:
             raise (BadRequest if res.get("bad") else RuntimeError)(res["error"])
@@ -428,20 +455,22 @@ def delete_clone(vid: str) -> None:
 # What the UI shows for each model. `pace`: measured on the desktop's CPU (16 threads), 2026-11-05.
 # `sample`: the recording to clone from, in seconds (min, max used, ideal range), from each model's own advice.
 MODELS = {
-    "piper": {"name": "Piper", "about": "Plain, clear voices that read long texts quickly.", "pace": "~17x faster than real time",
+    "piper": {"name": "Piper", "about": "Plain, clear voices that read long texts quickly.", "pace": "~15x faster than real time",
               "canClone": False},
     "pocket": {"name": "Pocket TTS", "about": "Kyutai's natural-sounding English voices.", "pace": "~2x faster than real time",
                "slow": True, "canClone": True,
                "sample": {"min": 3, "max": 30, "ideal": [10, 15], "tip": "Kyutai's own voices are 10 s clips; only the first 30 s are used."}},
     "kokoro": {"name": "Kokoro", "about": "82M-parameter model with natural voices in English, Spanish, French, Hindi, Italian "
-               "and Brazilian Portuguese. No cloning.", "pace": "PACE_KOKORO", "canClone": False},
+               "and Brazilian Portuguese. No cloning.", "pace": "~4x faster than real time", "canClone": False},
     "qwen3": {"name": "Qwen3-TTS", "about": "Alibaba's 0.6B model: nine preset speakers, and it clones a voice from a few seconds "
-              "of speech. 10 languages, Portuguese included.", "pace": "PACE_QWEN3", "slow": True, "canClone": True, "transcript": True,
+              "of speech. 10 languages, Portuguese included.", "pace": "about half real time: 10 s of speech takes ~20 s",
+              "slow": True, "canClone": True, "transcript": True,
               "sample": {"min": 3, "max": 30, "ideal": [10, 20],
                          "tip": "Complete sentences at a normal pace, pauses under 2 s. It copies best when it has the exact words "
                                 "(Echo transcribes English ones); over 30 s can make it hang."}},
     "voxcpm": {"name": "VoxCPM2", "about": "OpenBMB's 2B model: copies a voice, accent and tone from a sample, in 30 languages. "
-               "Every voice is a cloned one.", "pace": "PACE_VOXCPM", "slow": True, "canClone": True, "transcript": True,
+               "Every voice is a cloned one.", "pace": "~0.2x real time: 10 s of speech takes ~50 s",
+               "slow": True, "canClone": True, "transcript": True,
                "sample": {"min": 5, "max": 30, "ideal": [10, 30],
                           "tip": "At least 5 s; more clean speech copies better. The exact words help (Echo transcribes English "
                                  "ones): wrong words are the main cause of glitches."}},

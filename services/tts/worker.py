@@ -8,11 +8,13 @@ own transformers, and both pull in heavy extras that the main TTS venv (Piper, P
 Errors: {"error": "...", "bad": true when the request was at fault}.
 
 Engines: "qwen3" (voices "qwen3:<speaker>" and "clone:<id>") and "voxcpm" ("clone:<id>" only). A clone is <id>.wav
-and <id>.json (its words in "transcript") in --clones-dir. Each model loads on its first request and stays loaded.
+and <id>.json (its words in "transcript") in --clones-dir. Each model loads on its first request and stays loaded
+until the other engine is used: both together held 11 GB. server.py stops the whole worker when it sits unused.
 """
 
 import argparse
 import base64
+import gc
 import io
 import json
 import os
@@ -26,6 +28,7 @@ from pathlib import Path
 replies = os.fdopen(os.dup(1), "w", buffering=1)
 os.dup2(2, 1)
 sys.stdout = sys.stderr
+os.environ.setdefault("TQDM_DISABLE", "1")  # VoxCPM draws a progress bar per sentence into the engine log
 
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
@@ -33,10 +36,23 @@ import torch  # noqa: E402
 p = argparse.ArgumentParser()
 p.add_argument("--models-dir", required=True, help="models/tts")
 p.add_argument("--clones-dir", required=True)
-p.add_argument("--threads", type=int, default=8, help="CPU threads (16 competed with the rest of Echo)")
+# Measured on a Ryzen 7 8700F: Qwen3-TTS is as fast on 4 threads as on 8 (it is bound by its many small steps) and
+# slower on 16; VoxCPM2 is bigger and uses 8
+p.add_argument("--threads", type=int, default=0, help="CPU threads (default: 4 for Qwen3-TTS, 8 for VoxCPM2)")
 args = p.parse_args()
-torch.set_num_threads(args.threads)
 models_dir, clones_dir = Path(args.models_dir), Path(args.clones_dir)
+
+
+def bf16_cpu() -> bool:
+    """bfloat16 halves Qwen3-TTS's time on CPUs with bfloat16 instructions (0.41x vs 0.19x real time on Zen 4) and
+    is much slower than float32 on the rest."""
+    try:
+        flags = Path("/proc/cpuinfo").read_text()
+    except OSError:
+        return False
+    return "avx512_bf16" in flags or "amx_bf16" in flags
+
+
 MAX_PROMPTS = 8  # cloned voices kept read, most recently used last
 
 
@@ -54,7 +70,7 @@ def sample(voice: str) -> tuple[Path, str]:
 
 
 def loaded(what: str, t0: float) -> None:
-    print(f"tts worker: {what} loaded in {time.time() - t0:.1f} s", flush=True)
+    print(f"tts worker: {what} loaded in {time.perf_counter() - t0:.1f} s", flush=True)
 
 
 class Prompts(OrderedDict):
@@ -72,17 +88,26 @@ class Prompts(OrderedDict):
 class Qwen3:
     """Qwen3-TTS 0.6B: the CustomVoice model speaks the preset speakers, the Base model clones."""
 
+    threads = 4
+
     def __init__(self):
         self.models: dict = {}
         self.prompts = Prompts()
+
+    def loaded(self) -> bool:
+        return bool(self.models)
+
+    def unload(self) -> None:
+        self.models.clear()
+        self.prompts.clear()
 
     def model(self, kind: str):
         if kind not in self.models:
             from qwen_tts import Qwen3TTSModel
 
-            t0 = time.time()
-            # float32: CPUs without bfloat16 units run it much slower in bf16
-            self.models[kind] = Qwen3TTSModel.from_pretrained(str(models_dir / "qwen3-tts" / kind), device_map="cpu", dtype=torch.float32)
+            t0 = time.perf_counter()
+            dtype = torch.bfloat16 if bf16_cpu() else torch.float32
+            self.models[kind] = Qwen3TTSModel.from_pretrained(str(models_dir / "qwen3-tts" / kind), device_map="cpu", dtype=dtype)
             loaded(f"Qwen3-TTS {kind}", t0)
         return self.models[kind]
 
@@ -107,17 +132,26 @@ class Qwen3:
 
 class VoxCPM:
     """VoxCPM2: no preset voices, every voice is cloned from a sample. With the sample's words it copies the voice
-    more closely ("hi-fi" cloning); without them it still clones from the sound alone."""
+    more closely ("hi-fi" cloning); without them it still clones from the sound alone. Its weights are bfloat16."""
+
+    threads = 8
 
     def __init__(self):
         self.m = None
         self.prompts = Prompts()
 
+    def loaded(self) -> bool:
+        return self.m is not None
+
+    def unload(self) -> None:
+        self.m = None
+        self.prompts.clear()
+
     def model(self):
         if self.m is None:
             from voxcpm import VoxCPM as Model
 
-            t0 = time.time()
+            t0 = time.perf_counter()
             # no denoiser (an extra model from ModelScope, and it changes the voice); torch.compile is for CUDA
             self.m = Model.from_pretrained(str(models_dir / "voxcpm"), load_denoiser=False, optimize=False, device="cpu")
             loaded("VoxCPM2", t0)
@@ -128,16 +162,20 @@ class VoxCPM:
             wav, words = sample(voice)
             if not wav.exists():
                 raise Bad(f"unknown voice {voice}")
-            return {"reference_wav_path": str(wav), **({"prompt_wav_path": str(wav), "prompt_text": words} if words else {})}
+            # The sample encoded once (VoxCPM.generate() would encode it again for every sentence)
+            return self.model().tts_model.build_prompt_cache(
+                reference_wav_path=str(wav), **({"prompt_wav_path": str(wav), "prompt_text": words} if words else {}))
 
         return self.prompts.get_or(voice, make)
 
     def tts(self, voice: str, text: str):
         if not voice.startswith("clone:"):
             raise Bad(f"unknown voice {voice}: VoxCPM only speaks cloned voices")
-        m = self.model()
-        audio = m.generate(text=text, **self.prompt(voice), cfg_value=2.0, inference_timesteps=10, normalize=False, denoise=False)
-        return audio, m.tts_model.sample_rate
+        tts = self.model().tts_model
+        # As VoxCPM.generate(): retry_badcase reruns a sentence whose audio came out far too long for its text
+        wav, _, _ = tts.generate_with_prompt_cache(target_text=" ".join(text.split()), prompt_cache=self.prompt(voice), max_len=4096,
+                                                   inference_timesteps=10, cfg_value=2.0, retry_badcase=True)
+        return wav.squeeze(0).float().cpu().numpy(), tts.sample_rate
 
 
 def wav_b64(audio, rate: int) -> str:
@@ -155,7 +193,7 @@ def wav_b64(audio, rate: int) -> str:
 
 def main() -> None:
     engines = {"qwen3": Qwen3(), "voxcpm": VoxCPM()}
-    print(f"tts worker: ready ({args.threads} threads)", flush=True)
+    print("tts worker: ready", flush=True)
     for line in sys.stdin:
         try:
             req = json.loads(line)
@@ -163,14 +201,23 @@ def main() -> None:
             engine = engines.get(str(req.get("engine")))
             if not engine:
                 raise Bad(f"unknown engine {req.get('engine')}")
+            if op != "forget":
+                # One engine's models in memory at a time
+                for other in engines.values():
+                    if other is not engine and other.loaded():
+                        other.unload()
+                        gc.collect()
+            torch.set_num_threads(args.threads or engine.threads)
             if op == "tts":
-                t0 = time.time()
-                audio, rate = engine.tts(voice, str(req.get("text", "")))
+                t0 = time.perf_counter()
+                with torch.inference_mode():
+                    audio, rate = engine.tts(voice, str(req.get("text", "")))
                 out = {"wav": wav_b64(audio, rate)}
                 seconds = len(np.asarray(audio).reshape(-1)) / rate
-                print(f"tts worker: {seconds:.1f} s of speech in {time.time() - t0:.1f} s", flush=True)
+                print(f"tts worker: {seconds:.1f} s of speech in {time.perf_counter() - t0:.1f} s", flush=True)
             elif op == "prepare":
-                engine.prompt(voice)
+                with torch.inference_mode():
+                    engine.prompt(voice)
                 out = {}
             elif op == "forget":
                 engine.prompts.pop(voice, None)

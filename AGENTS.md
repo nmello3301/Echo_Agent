@@ -39,8 +39,9 @@ env is set.
 `services/`: Python, one venv each (`services/<name>/.venv`).
 - `tts/server.py`: TTS on port `tts` (echo.yaml). `POST /tts {text, voice, speed}` → WAV (whole file, not streamed);
   `GET /voices` → voices and models. Piper (fast, ~15x real time on CPU), Pocket TTS (natural, ~2x, clones voices),
-  Kokoro 82M (ONNX, ~4x); Qwen3-TTS 0.6B and VoxCPM2 (clone voices) run in `tts/worker.py`, a child process with
-  its own venv `services/tts-torch/.venv`. Their model files come from the Models tab (`models/tts/<model>/`).
+  Kokoro 82M (ONNX, ~4x); Qwen3-TTS 0.6B (~0.5x) and VoxCPM2 (~0.2x; both clone voices) run in `tts/worker.py`, a
+  child process with its own venv `services/tts-torch/.venv`, stopped after 10 idle minutes. Their model files come
+  from the Models tab (`models/tts/<model>/`).
 - `decision/server.py` Jebadiah renderer · `pyworkspace/kernel.py` the agent's python tool.
 
 `sdk/`: the Echo SDK (`index.ts`) and CLI (`cli.ts`) that drive agent runs; no dependencies.

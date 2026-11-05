@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       bubblewrap \
       ripgrep fd-find \
       tesseract-ocr tesseract-ocr-eng tesseract-ocr-por poppler-utils \
+      sox \
     && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*

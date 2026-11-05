@@ -25,6 +25,9 @@ to "Done" with the date (or delete it). Known limitations of what already exists
   ~2 GB of VRAM. A `device` setting for services/tts/worker.py could use the GPU while the main model is stopped.
 - **Streaming speech** for the slow models: VoxCPM2 has `generate_streaming`; Live could start playing the first
   chunk of a sentence instead of waiting for the whole one.
+- **Faster Qwen3-TTS on the CPU.** It runs at ~0.5x real time in bfloat16, and 4 threads are as fast as 8: the time
+  goes to its code predictor, 15 small sequential steps per audio frame through Hugging Face `generate()`. A plain
+  loop with a static KV cache (and maybe `torch.compile`) could cut that overhead.
 - **Qwen3-TTS 1.7B** (better voices, `instruct` for tone) and **VoxCPM2 voice design** ("(a calm older man)Hello")
   once there is GPU room for them.
 - **Kokoro's Japanese and Chinese voices** need misaki's phonemizers; left out for now.

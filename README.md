@@ -43,15 +43,16 @@ and speaks it (`services/tts`). *Auto summarize + read* speaks a 2-5 sentence su
 instead of the full text. Ctrl+Enter in the box reads it.
 
 *Change voice* (in Read and in Live) picks a **model** first, then one of its voices, with a ▶ button to hear each
-one (on your own test sentence, if you like). Speeds below are on the desktop's CPU; the GPU is the main model's.
+one (on your own test sentence, if you like). Speeds are on the desktop's CPU (the GPU is the main model's): 2x real time
+means 10 s of speech takes 5 s to make, 0.5x means it takes 20 s.
 
 | Model | Voices | Cloning | Speed (CPU) | Download |
 | --- | --- | --- | --- | --- |
-| **Piper** | 8 English voices | no | PACE_PIPER | each voice on first use (60-120 MB) |
-| **Pocket TTS** (Kyutai) | 21 English voices | yes (gated weights, see below) | PACE_POCKET | on first use (220 MB) |
-| **Kokoro 82M** (ONNX) | 42 voices: English, Spanish, French, Hindi, Italian, Brazilian Portuguese | no | PACE_KOKORO | Models tab (337 MB) |
-| **Qwen3-TTS 0.6B** | 9 preset speakers, 10 languages | yes | PACE_QWEN3 | Models tab (4.7 GB) |
-| **VoxCPM2** (OpenBMB, 2B) | cloned voices only, 30 languages | yes | PACE_VOXCPM | Models tab (4.6 GB) |
+| **Piper** | 8 English voices | no | ~15x real time | each voice on first use (60-120 MB) |
+| **Pocket TTS** (Kyutai) | 21 English voices | yes (gated weights, see below) | ~2-3x real time | on first use (220 MB) |
+| **Kokoro 82M** (ONNX) | 41 voices: English, Spanish, French, Hindi, Italian, Brazilian Portuguese | no | ~4x real time | Models tab (337 MB) |
+| **Qwen3-TTS 0.6B** | 9 preset speakers, 10 languages | yes | ~0.5x real time | Models tab (4.7 GB) |
+| **VoxCPM2** (OpenBMB, 2B) | cloned voices only, 30 languages | yes | ~0.2x real time | Models tab (4.6 GB) |
 
 The Models tab's *Text to speech* filter shows the three downloads; a model that isn't downloaded yet links there.
 
@@ -65,9 +66,11 @@ at https://huggingface.co/kyutai/pocket-tts with a Hugging Face account, then gi
 `.env` and `docker compose up -d` (Docker), or `services/tts/.venv/bin/hf auth login` and `./echo restart` (native).
 
 Qwen3-TTS and VoxCPM2 run in a separate worker process (`services/tts/worker.py`, venv `services/tts-torch/.venv`)
-that starts the first time you use one of their voices; each model then takes several seconds to load and stays in
-RAM (QWEN3_RAM / VOXCPM_RAM). In Live they delay every answer (Live speaks each sentence as soon as it is written),
-and the picker says so.
+that starts the first time you use one of their voices. Qwen3-TTS loads in ~5 s and takes ~2.5 GB of RAM per model
+(its preset speakers and its cloning are two models); VoxCPM2 loads in ~30 s and takes ~7 GB. Only one of the two
+stays loaded, and the worker stops after 10 minutes unused, which frees the memory. On the CPU both are slower than
+real time (bfloat16 where the CPU supports it, as this Ryzen does): Read waits for the whole text, and in Live they
+delay every answer (Live speaks each sentence as soon as it is written), which the picker says.
 
 After updating a native install, run `services/tts/.venv/bin/pip install -r services/tts/requirements.txt` once, and
 for Qwen3-TTS and VoxCPM2: `python3 -m venv services/tts-torch/.venv && services/tts-torch/.venv/bin/pip install -r

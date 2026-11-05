@@ -184,7 +184,8 @@ export function ChangeVoice({ voices, speed, onTest, live = false }: { voices: R
         {live && current?.slow && <Badge tone="warn">slow: answers start later</Badge>}
         {voices.error && <span className="text-sm text-bad truncate">{voices.error}</span>}
         {list || !voices.error ? (
-          <Button kind={open ? "ghost" : "default"} className="ml-auto" onClick={() => { setOpen(!open); if (open) stopVoiceTest(); }} disabled={!list}>
+          // Opening re-reads the list: Read and Live each keep one, and a voice cloned in the other tab is new here
+          <Button kind={open ? "ghost" : "default"} className="ml-auto" onClick={() => { if (open) stopVoiceTest(); else reload(); setOpen(!open); }} disabled={!list}>
             {open ? "Done" : "Change voice"}
           </Button>
         ) : (
