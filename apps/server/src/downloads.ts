@@ -9,12 +9,24 @@ interface CatalogFile {
   dest: string; // relative to the project root
 }
 
+/** A whole Hugging Face repository, listed when the Models tab asks (its files and sizes come from the API) */
+interface CatalogRepo {
+  repo: string;
+  dest: string; // folder, relative to the project root
+  rev?: string;
+}
+
+/** The Models tab's filter */
+export type ModelType = "main" | "decision" | "tts";
+
 interface CatalogModel {
   id: string;
   name: string;
+  type: ModelType;
   role: string;
   about: string;
-  files: CatalogFile[];
+  files?: CatalogFile[];
+  repos?: CatalogRepo[];
   engine?: "strata";
 }
 
@@ -25,12 +37,15 @@ const QWEN27 = "unsloth/Qwen3.8-27B-GGUF";
 const JEB = "frontier-infra/jebadiah-9b-v2-GGUF";
 const FLASH = "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF";
 const FLASH_REV = "ed59f92082b1e93c0e96d60a8b11aab089b52f09"; // the revision Strata v0.1.38 pins
+// kokoro-onnx's re-export of Kokoro v1.0 (full precision: the int8 file sounds noticeably worse)
+const KOKORO = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1";
 
 /** The initial models. Expand this list to add more. */
 export const CATALOG: CatalogModel[] = [
   {
     id: "qwen3.8-27b",
     name: "Qwen3.8 27B (UD-Q4_K_M)",
+    type: "main",
     role: "Main model · llama.cpp",
     about: "Dense 27B with image input and an MTP head for speculative decoding.",
     files: [
@@ -42,6 +57,7 @@ export const CATALOG: CatalogModel[] = [
   {
     id: "qwen3.8-flash-next",
     name: "Qwen3.8-Flash-Next (IQ2_XS)",
+    type: "main",
     role: "Main model · Strata",
     about: "125B MoE, ~6B active per token, spread over VRAM, RAM and SSD by Strata. The engine is compiled separately.",
     engine: "strata",
@@ -53,6 +69,7 @@ export const CATALOG: CatalogModel[] = [
   {
     id: "jebadiah-9b-v2",
     name: "Jebadiah 9B v2 (Q8_0)",
+    type: "decision",
     role: "Decision model · llama.cpp",
     about: "Answers typed questions with calibrated probabilities. Includes its prompt renderer and tokenizer.",
     files: [
@@ -60,6 +77,34 @@ export const CATALOG: CatalogModel[] = [
       "chat_template.jinja", "temperatures.json", "README.md", "scripts/jebadiah_prompt.py",
       "scripts/ainode_prompt_verbatim.py", "scripts/decide_gguf.py", "scripts/example-request.json",
     ].map((f) => ({ url: hf(JEB, f), dest: `models/jebadiah/${f}` })),
+  },
+  // Text to speech (services/tts reads these folders; Read and Live pick the voices)
+  {
+    id: "kokoro-82m",
+    name: "Kokoro 82M",
+    type: "tts",
+    role: "Text to speech · ONNX Runtime on the CPU",
+    about: "Small and fast, with natural preset voices in English, Spanish, French, Hindi, Italian and Brazilian Portuguese. No cloning.",
+    files: ["kokoro-v1.0.onnx", "voices-v1.0.bin"].map((f) => ({ url: `${KOKORO}/${f}`, dest: `models/tts/kokoro/${f}` })),
+  },
+  {
+    id: "qwen3-tts-0.6b",
+    name: "Qwen3-TTS 0.6B",
+    type: "tts",
+    role: "Text to speech · PyTorch on the CPU",
+    about: "Nine preset speakers, and voice cloning from a few seconds of speech, in 10 languages (Portuguese included). Two models: CustomVoice speaks the presets, Base clones.",
+    repos: [
+      { repo: "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice", dest: "models/tts/qwen3-tts/custom-voice" },
+      { repo: "Qwen/Qwen3-TTS-12Hz-0.6B-Base", dest: "models/tts/qwen3-tts/base" },
+    ],
+  },
+  {
+    id: "voxcpm2",
+    name: "VoxCPM2",
+    type: "tts",
+    role: "Text to speech · PyTorch on the CPU",
+    about: "OpenBMB's 2B model: copies a voice, accent and tone from 5-30 s of speech, in 30 languages (Portuguese included). Every voice is a cloned one.",
+    repos: [{ repo: "openbmb/VoxCPM2", dest: "models/tts/voxcpm" }],
   },
 ];
 
@@ -72,6 +117,29 @@ async function sizeOf(url: string): Promise<number> {
   if (n) remoteSize.set(url, n);
   return n;
 }
+
+// Repository files the engines never read
+const SKIP = /(^|\/)\.gitattributes$|\.(png|jpe?g|gif|webp|mp4)$/i;
+const repoFiles = new Map<string, CatalogFile[]>();
+
+async function listRepo(r: CatalogRepo): Promise<CatalogFile[]> {
+  const rev = r.rev ?? "main";
+  const key = `${r.repo}@${rev}`;
+  const cached = repoFiles.get(key);
+  if (cached) return cached;
+  const res = await fetch(`${HF}/api/models/${r.repo}/tree/${rev}?recursive=true`, { signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) throw new Error(`listing ${r.repo}: HTTP ${res.status}`);
+  const tree = (await res.json()) as { type: string; path: string; size: number; lfs?: { size: number } }[];
+  const files = tree.filter((f) => f.type === "file" && !SKIP.test(f.path)).map((f) => {
+    const url = hf(r.repo, f.path, rev);
+    remoteSize.set(url, f.lfs?.size ?? f.size);
+    return { url, dest: `${r.dest}/${f.path}` };
+  });
+  repoFiles.set(key, files);
+  return files;
+}
+
+const filesOf = async (m: CatalogModel) => [...(m.files ?? []), ...(await Promise.all((m.repos ?? []).map(listRepo))).flat()];
 
 const localSize = (p: string) => (existsSync(p) ? statSync(p).size : 0);
 
@@ -88,7 +156,12 @@ const jobs = new Map<string, Job>();
 
 export async function catalogStatus() {
   return Promise.all(CATALOG.map(async (m) => {
-    const files = await Promise.all(m.files.map(async (f) => {
+    let listError: string | undefined;
+    const list = await filesOf(m).catch((e) => {
+      listError = (e as Error).message;
+      return [];
+    });
+    const files = await Promise.all(list.map(async (f) => {
       const dest = path.join(ROOT, f.dest);
       const total = await sizeOf(f.url).catch(() => 0);
       const have = localSize(dest);
@@ -100,9 +173,10 @@ export async function catalogStatus() {
     const have = files.reduce((a, f) => a + f.have, 0);
     const job = jobs.get(m.id);
     return {
-      id: m.id, name: m.name, role: m.role, about: m.about, files, total, have,
-      state: job ? "downloading" : files.every((f) => f.done) ? "installed" : have > 0 ? "partial" : "missing",
+      id: m.id, name: m.name, type: m.type, role: m.role, about: m.about, files, total, have,
+      state: job ? "downloading" : files.length && files.every((f) => f.done) ? "installed" : have > 0 ? "partial" : "missing",
       job: job ? { file: job.file, have: job.have, total: job.total, bytesPerSec: job.bytesPerSec, error: job.error } : null,
+      error: listError,
       engine: m.engine === "strata" ? strataStatus() : undefined,
     };
   }));
@@ -163,13 +237,20 @@ export async function startDownload(id: string) {
   if (jobs.has(id)) return;
   const job: Job = { id, abort: new AbortController(), file: "", have: 0, total: 0, bytesPerSec: 0 };
   jobs.set(id, job);
-  const sizes = await Promise.all(m.files.map((f) => sizeOf(f.url).catch(() => 0)));
+  let files: CatalogFile[];
+  try {
+    files = await filesOf(m);
+  } catch (e) {
+    jobs.delete(id);
+    throw e;
+  }
+  const sizes = await Promise.all(files.map((f) => sizeOf(f.url).catch(() => 0)));
   job.total = sizes.reduce((a, b) => a + b, 0);
   publish({ type: "download", id, state: "started", total: job.total });
   (async () => {
     try {
       let doneBytes = 0;
-      for (const [i, f] of m.files.entries()) {
+      for (const [i, f] of files.entries()) {
         await fetchFile(job, f, () => doneBytes);
         doneBytes += sizes[i] || localSize(path.join(ROOT, f.dest));
       }

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, readSSE } from "../api.ts";
 import { Badge, Button, Select } from "./ui.tsx";
+import { ChangeVoice, stopVoiceTest, useVoices } from "./Voices.tsx";
 
 type Phase = "off" | "listening" | "hearing" | "thinking" | "speaking";
 interface Turn {
@@ -293,8 +294,9 @@ export function Live({ active }: { active: boolean }) {
   const [phase, setPhase] = useState<Phase>("off");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [effort, setEffort] = useState("off");
-  const [voice, setVoice] = useState("piper:en_US-lessac-medium");
-  const [voices, setVoices] = useState<{ value: string; label: string }[]>([]);
+  const [defaultVoice, setDefaultVoice] = useState<string>(); // echo.yaml live.voice
+  const voices = useVoices("echo.live.voice", defaultVoice);
+  const voice = voices.voice?.id ?? defaultVoice ?? "piper:en_US-lessac-medium";
   const [silenceMs, setSilenceMs] = useState(500);
   const [session, setSession] = useState(() => crypto.randomUUID());
   const [level, setLevel] = useState(0);
@@ -306,11 +308,8 @@ export function Live({ active }: { active: boolean }) {
   useEffect(() => {
     api<{ effort: string; voice: string }>("/api/live/config").then((c) => {
       setEffort(c.effort);
-      setVoice(c.voice);
+      setDefaultVoice(c.voice);
     }).catch(() => {});
-    api<{ voices: { id: string; name: string; kind: string }[] }>("/api/read/voices")
-      .then((r) => setVoices(r.voices.filter((v) => v.kind === "piper").map((v) => ({ value: v.id, label: v.name }))))
-      .catch(() => {});
   }, []);
   useEffect(() => {
     if (phase === "off") return;
@@ -319,7 +318,10 @@ export function Live({ active }: { active: boolean }) {
   }, [phase]);
   // leaving the tab stops listening: an open microphone nobody watches is a surprise
   useEffect(() => {
-    if (!active) engine.current?.stop();
+    if (!active) {
+      engine.current?.stop();
+      stopVoiceTest();
+    }
   }, [active]);
   useEffect(() => () => engine.current?.stop(), []);
 
@@ -355,13 +357,13 @@ export function Live({ active }: { active: boolean }) {
               className={`px-2.5 py-1.5 ${effort === e ? "bg-accent/20 text-accent" : "text-dim hover:text-text"}`}>thinking {e}</button>
           ))}
         </div>
-        {voices.length > 0 && <Select value={voice} onChange={setVoice} options={voices} />}
         <Select value={String(silenceMs)} onChange={(v) => setSilenceMs(Number(v))} options={[
           { value: "400", label: "Reply after 0.4 s pause" }, { value: "500", label: "Reply after 0.5 s pause" }, { value: "700", label: "Reply after 0.7 s pause" },
         ]} />
         <div className="flex-1" />
         <Button kind="ghost" onClick={newSession}>New conversation</Button>
       </div>
+      <ChangeVoice voices={voices} speed={1} live onTest={() => engine.current?.interrupt()} />
       <div className="flex items-center gap-3 text-sm">
         <span className={phase === "hearing" ? "text-good" : phase === "off" ? "text-dim" : "text-accent"}>{PHASE_TEXT[phase]}</span>
         {phase !== "off" && <div className="w-32 h-1.5 bg-line rounded-full overflow-hidden"><div className="h-full bg-good" style={{ width: `${Math.min(100, level * 600)}%` }} /></div>}

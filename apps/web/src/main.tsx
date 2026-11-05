@@ -46,6 +46,15 @@ function App() {
     if (!location.hash.startsWith(`#${tab}`)) history.replaceState(null, "", `#${tab}`);
   }, [tab]);
   useEffect(() => save("echo.monitorCollapsed", monitorCollapsed), [monitorCollapsed]);
+  // Links between tabs (e.g. a voice picker's "#models/tts") switch to the tab they name
+  useEffect(() => {
+    const h = () => {
+      const t = location.hash.slice(1).split("/")[0] as Tab;
+      if (TABS.some((x) => x.id === t)) setTab(t);
+    };
+    addEventListener("hashchange", h);
+    return () => removeEventListener("hashchange", h);
+  }, []);
 
   // Alt+1..8 switch tabs, Alt+M toggles the monitor
   useEffect(() => {

@@ -346,13 +346,14 @@ function ragSpecs(): Spec[] {
   ];
 }
 
-/** Read tab's text-to-speech: Piper and Pocket TTS (voice cloning), CPU-only (services/tts/server.py).
+/** Text to speech for Read and Live: Piper, Pocket TTS, Kokoro, and Qwen3-TTS and VoxCPM in worker processes, CPU-only
+ * (services/tts/server.py).
  * Voices download into models/ (Pocket TTS through the Hugging Face cache there); cloned voices are kept in data/. */
 export function ttsSpec(): Spec {
   const port = config.echo.ports.tts ?? 8095;
   return {
     id: "tts",
-    name: "Text to speech (Piper, Pocket TTS)",
+    name: "Text to speech (Piper, Pocket TTS, Kokoro, Qwen3-TTS, VoxCPM)",
     role: "decision-server",
     cmd: path.join(ROOT, "services/tts/.venv/bin/python"),
     args: [path.join(ROOT, "services/tts/server.py"), "--port", String(port), "--voices-dir", abs("models/tts"),

@@ -7,7 +7,7 @@ run in this folder: never read it with a tool, and use it instead of exploring.
 
 **Context is your scarcest resource.** Never read a whole large file: `agent.ts` (~800 lines), `main.ts` (~570),
 `Git.tsx` (~550), `engines.ts` (~420), `Agent.tsx` (~400), `gitview.ts` (~390), `selfdev.ts` (~360) and
-`services/tts/server.py` (~300) each fill a large part of it. grep for the function or route first, then read that
+`services/tts/server.py` (~550) each fill a large part of it. grep for the function or route first, then read that
 range (offset/limit). Put new features in their own files (a route module mounted with `app.route(...)`, like
 gitview.ts) rather than growing main.ts.
 
@@ -38,7 +38,9 @@ env is set.
 
 `services/`: Python, one venv each (`services/<name>/.venv`).
 - `tts/server.py`: TTS on port `tts` (echo.yaml). `POST /tts {text, voice, speed}` → WAV (whole file, not streamed);
-  `GET /voices`. Piper (fast, ~17x real time on CPU) and Pocket TTS (natural, ~2x real time, clones voices).
+  `GET /voices` → voices and models. Piper (fast, ~15x real time on CPU), Pocket TTS (natural, ~2x, clones voices),
+  Kokoro 82M (ONNX, ~4x); Qwen3-TTS 0.6B and VoxCPM2 (clone voices) run in `tts/worker.py`, a child process with
+  its own venv `services/tts-torch/.venv`. Their model files come from the Models tab (`models/tts/<model>/`).
 - `decision/server.py` Jebadiah renderer · `pyworkspace/kernel.py` the agent's python tool.
 
 `sdk/`: the Echo SDK (`index.ts`) and CLI (`cli.ts`) that drive agent runs; no dependencies.
