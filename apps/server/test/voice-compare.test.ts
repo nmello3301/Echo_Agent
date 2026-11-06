@@ -106,15 +106,14 @@ describe("voice comparison", () => {
     const sent = readWav(Buffer.from(qwen[0].audio.replace("data:audio/wav;base64,", ""), "base64"))!;
     assert.ok(Math.abs(sent.data.length / 2 / RATE - 12.4) < 0.01, "the prepared sample is what gets cloned");
 
-    assert.equal(echo.log.said.filter((s) => s.voice.startsWith("clone:")).length, 4, "2 voices, 2 lines, only Qwen3-TTS can run");
-    assert.equal(echo.log.said.filter((s) => s.voice === "kokoro:af_heart").length, 2, "the preset is made once, not per voice");
+    assert.equal(echo.log.said.length, 4, "2 voices, 2 lines, only Qwen3-TTS can run");
 
     assert.match(out.failed.get("alice/pocket") ?? "", /cloning weights/);
     assert.match(out.skipped.get("voxcpm") ?? "", /not downloaded/);
-    for (const f of ["alice/reference.wav", "alice/qwen3-1.wav", "bob-smith/qwen3-2.wav", "preset/kokoro-1.wav"]) assert.ok(existsSync(results(dir, f)), f);
+    for (const f of ["alice/reference.wav", "alice/qwen3-1.wav", "bob-smith/qwen3-2.wav"]) assert.ok(existsSync(results(dir, f)), f);
 
     const html = readFileSync(out.page, "utf8");
-    for (const src of ["alice/reference.wav", "alice/qwen3-1.wav", "bob-smith/qwen3-2.wav", "preset/kokoro-2.wav"]) assert.ok(html.includes(`src="${src}"`), src);
+    for (const src of ["alice/reference.wav", "alice/qwen3-1.wav", "bob-smith/qwen3-2.wav"]) assert.ok(html.includes(`src="${src}"`), src);
     assert.ok(html.includes("Pocket TTS: Voice cloning needs Kyutai's"), "says why Pocket TTS made nothing");
     assert.ok(html.includes("VoxCPM2: not downloaded"));
     assert.equal(html.match(/Voice cloning needs/g)?.length, 1, "the same reason for two voices is listed once");
@@ -134,7 +133,7 @@ describe("voice comparison", () => {
     before = count();
     writeFileSync(path.join(dir, "lines.txt"), "First line.\nA new second line.\n");
     await run(options(dir, echo.url));
-    assert.deepEqual(count(), { qwen: before.qwen, said: before.said + 3 }, "the new line in 2 clones and the preset");
+    assert.deepEqual(count(), { qwen: before.qwen, said: before.said + 2 }, "the new line in 2 clones");
 
     before = count();
     const oldAlice = echo.voices.find((v) => v.id.startsWith("clone:alice-qwen3"))!.id;
@@ -162,7 +161,22 @@ describe("voice comparison", () => {
 
     const before = echo.log.said.length;
     await run(options(dir, echo.url));
-    assert.equal(echo.log.said.length, before + 2, "the failed line in the clone and in the preset, not the finished ones");
+    assert.equal(echo.log.said.length, before + 1, "the failed line, not the finished one");
+  });
+
+  test("a model that can't clone is skipped and says so", async () => {
+    const echo = await fakeEcho();
+    const out = await run({ ...options(workspace({ "alice.wav": recording(12) }), echo.url), engines: ["kokoro"] });
+    assert.match(out.skipped.get("kokoro") ?? "", /can't clone/);
+    assert.equal(echo.log.cloned.length, 0);
+  });
+
+  test("warns when a transcript may cover more than the part of the recording that is used", async () => {
+    const echo = await fakeEcho();
+    const notes = (o: Parameters<typeof run>[0]) => { const seen: string[] = []; return run({ ...o, log: (l) => seen.push(l) }).then(() => seen.filter((l) => l.includes("first 30 s"))); };
+    assert.equal((await notes(options(workspace({ "long.wav": recording(40), "long.txt": "Words." }), echo.url))).length, 1);
+    assert.equal((await notes(options(workspace({ "long.wav": recording(40) }), echo.url))).length, 0, "no words of its own: nothing to mismatch");
+    assert.equal((await notes(options(workspace({ "fine.wav": recording(20), "fine.txt": "Words." }), echo.url))).length, 0);
   });
 
   test("a sample too short for a model is refused without asking Echo", async () => {

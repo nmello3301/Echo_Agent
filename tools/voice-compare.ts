@@ -1,7 +1,7 @@
 /**
  * Clone the same voice samples in several text-to-speech models and write a page to compare them side by side.
  *
- *   node tools/voice-compare.ts [--dir data/voice-compare] [--url http://127.0.0.1:7777] [--engines pocket,qwen3,voxcpm]
+ *   node tools/voice-compare.ts [--dir data/voice-compare] [--url http://127.0.0.1:7777] [--engines qwen3,voxcpm]
  *
  *   <dir>/samples/<voice>.wav   a recording per voice (MP3, M4A, OGG, FLAC, ... need ffmpeg)
  *   <dir>/samples/<voice>.txt   optional: what it says, word for word (Echo transcribes English recordings itself)
@@ -22,9 +22,7 @@ const RATE = 24_000;
 const MAX_S = 30; // what the models use at most, and where the page's copy of a sample stops
 const AUDIO = new Set([".wav", ".mp3", ".m4a", ".ogg", ".oga", ".opus", ".flac", ".webm"]);
 // Fastest first: the page fills up early, and the slowest model isn't holding the others back
-export const ENGINES = ["pocket", "qwen3", "voxcpm"];
-// Kokoro can't clone. One of its presets shows a stock voice next to the clones, made once and repeated per voice.
-const PRESET = { engine: "kokoro", voice: "kokoro:af_heart", label: "Kokoro preset (not a clone)" };
+const ENGINES = ["qwen3", "voxcpm"];
 // Plain narration, then numbers and names (where models slip), then a change of tone
 const DEFAULT_LINES = [
   "The old lighthouse has guided ships along this coast for more than a hundred years, and on clear nights you can still see its beam from the town.",
@@ -153,7 +151,7 @@ export function prepare(pcm: Float32Array, maxS: number): { wav: Buffer; seconds
 const readText = (file: string) => readFileSync(file, "utf8").replace(/^﻿/, "").trim();
 
 /** Every recording is read before anything is cloned: a bad file should stop the run now, not an hour into it. */
-function loadSamples(folder: string): Sample[] {
+function loadSamples(folder: string, log: (line: string) => void): Sample[] {
   mkdirSync(folder, { recursive: true });
   const files = readdirSync(folder).filter((f) => AUDIO.has(path.extname(f).toLowerCase())).sort();
   if (!files.length) throw new Error(`no recordings in ${folder}: add one per voice (WAV, MP3, M4A, OGG or FLAC), about 15 s each`);
@@ -171,6 +169,9 @@ function loadSamples(folder: string): Sample[] {
       throw new Error(`${f}: ${(e as Error).message}`);
     }
     const words = path.join(folder, `${stem}.txt`);
+    // Words the models can't hear in the audio are the main cause of glitches
+    if (existsSync(words) && prepare(pcm, Infinity).seconds > MAX_S)
+      log(`note: only the first ${MAX_S} s of ${f} are used, so ${stem}.txt should hold only the words in those ${MAX_S} s`);
     return { slug, name: stem.replace(/[_-]+/g, " ").slice(0, 40), pcm, transcript: existsSync(words) ? readText(words) : "", seconds };
   });
 }
@@ -197,7 +198,7 @@ function page(samples: Sample[], lines: string[], columns: { id: string; label: 
 <div class="wrap"><table>
 <tr><th>Sentence</th>${columns.map((c) => `<th>${esc(c.label)}</th>`).join("")}</tr>
 ${lines.map((text, i) => `<tr><td>${esc(text)}</td>${columns.map((c) =>
-    `<td>${cell(c.id === PRESET.engine ? `preset/kokoro-${i + 1}.wav` : `${s.slug}/${c.id}-${i + 1}.wav`, text)}</td>`).join("")}</tr>`).join("\n")}
+    `<td>${cell(`${s.slug}/${c.id}-${i + 1}.wav`, text)}</td>`).join("")}</tr>`).join("\n")}
 </table></div>`).join("\n");
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Voice comparison</title>
@@ -222,7 +223,7 @@ ${sections}
 
 export async function run(o: Options): Promise<Outcome> {
   const results = path.join(o.dir, "results");
-  const samples = loadSamples(path.join(o.dir, "samples"));
+  const samples = loadSamples(path.join(o.dir, "samples"), o.log);
   const lines = loadLines(o.dir);
   const echo = await api<{ models: Model[]; voices: { id: string }[] }>(`${o.url}/api/read/voices`);
   const existing = new Set(echo.voices.map((v) => v.id));
@@ -233,8 +234,7 @@ export async function run(o: Options): Promise<Outcome> {
   const failed = new Map<string, string>();
   const skipped = new Map<string, string>();
   const nameOf = (id: string) => echo.models.find((m) => m.id === id)?.name ?? id;
-  const kokoro = echo.models.find((m) => m.id === PRESET.engine);
-  const columns = [...o.engines.map((id) => ({ id, label: nameOf(id) })), ...(kokoro?.installed ? [{ id: PRESET.engine, label: PRESET.label }] : [])];
+  const columns = o.engines.map((id) => ({ id, label: nameOf(id) }));
   const pageFile = path.join(results, "index.html");
   const save = () => {
     writeFileSync(`${stateFile}.tmp`, JSON.stringify(state, null, 1));
@@ -296,13 +296,6 @@ export async function run(o: Options): Promise<Outcome> {
       save();
     }
   };
-
-  if (kokoro?.installed) {
-    for (const [i, text] of lines.entries())
-      await attempt(`preset/${PRESET.engine}/${i}`, `${PRESET.label} / line ${i + 1}`, () => say(`preset/kokoro-${i + 1}.wav`, PRESET.voice, text, `${PRESET.label} / line ${i + 1}`));
-  } else {
-    skipped.set(PRESET.engine, "not downloaded, so there is no preset to compare with (Models tab)");
-  }
 
   for (const id of o.engines) {
     const m = echo.models.find((x) => x.id === id);

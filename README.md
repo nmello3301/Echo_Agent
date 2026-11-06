@@ -65,11 +65,11 @@ English recordings itself (Live's speech to text). Pocket TTS's cloning weights 
 at https://huggingface.co/kyutai/pocket-tts with a Hugging Face account, then give Echo a read token: `HF_TOKEN=` in
 `.env` and `docker compose up -d` (Docker), or `services/tts/.venv/bin/hf auth login` and `./echo restart` (native).
 
-**Compare models.** `node tools/voice-compare.ts` clones the same recordings in Pocket TTS, Qwen3-TTS and VoxCPM2, has
-each clone say the same sentences, and writes a page that plays them side by side, with a Kokoro preset for reference
-(Kokoro can't clone). With Echo running, put one recording per voice in `data/voice-compare/samples/`: about 15 s suits
-all three models, and anything but a WAV needs `ffmpeg`. Add `<voice>.txt` with its exact words if you have them (needed
-for languages other than English), and `data/voice-compare/lines.txt` to choose the sentences, one per line. Then open
+**Compare models.** `node tools/voice-compare.ts` clones the same recordings in Qwen3-TTS and VoxCPM2, has each clone
+say the same sentences, and writes a page that plays them side by side (`--engines pocket,qwen3,voxcpm` adds Pocket
+TTS). With Echo running, put one recording per voice in `data/voice-compare/samples/`: about 15 s suits both models,
+and anything but a WAV needs `ffmpeg`. Add `<voice>.txt` with its exact words if you have them (needed for languages
+other than English), and `data/voice-compare/lines.txt` to choose the sentences, one per line. Then open
 `data/voice-compare/results/index.html`. The clones also appear in the voice pickers. Models that aren't ready are
 listed on the page; running the command again makes only what is missing or changed. Only clone voices you have
 permission to use.
