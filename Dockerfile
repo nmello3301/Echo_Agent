@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       bubblewrap \
       ripgrep fd-find \
       tesseract-ocr tesseract-ocr-eng tesseract-ocr-por poppler-utils \
+      sox \
     && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -41,6 +42,9 @@ COPY services/stt/requirements.txt services/stt/
 RUN for s in decision pyworkspace tts stt; do \
       python3 -m venv services/$s/.venv && services/$s/.venv/bin/pip install -q --no-cache-dir -r services/$s/requirements.txt || exit 1; \
     done
+# Qwen3-TTS and VoxCPM2 for services/tts/worker.py: their own venv (qwen-tts pins transformers; heavy extras)
+COPY services/tts-torch/requirements.txt services/tts-torch/
+RUN python3 -m venv services/tts-torch/.venv && services/tts-torch/.venv/bin/pip install -q --no-cache-dir -r services/tts-torch/requirements.txt
 
 # Node dependencies, then the app itself, then the UI build
 COPY package.json package-lock.json ./

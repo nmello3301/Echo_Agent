@@ -4,11 +4,27 @@ import { Badge, Bar, Button, Collapsible } from "./ui.tsx";
 
 interface FileStatus { name: string; dest: string; total: number; have: number; done: boolean }
 interface Engine { cloned: boolean; cuda: boolean; built: boolean; building: boolean; log: string[]; installCommand: string }
+type ModelType = "main" | "decision" | "tts";
 interface ModelStatus {
-  id: string; name: string; role: string; about: string; files: FileStatus[]; total: number; have: number;
+  id: string; name: string; type: ModelType; role: string; error?: string; about: string; files: FileStatus[]; total: number; have: number;
   state: "installed" | "partial" | "missing" | "downloading";
   job: { file: string; have: number; total: number; bytesPerSec: number } | null;
   engine?: Engine;
+}
+
+const FILTERS: [ModelType | "all", string][] = [["all", "All"], ["main", "Language"], ["decision", "Decision"], ["tts", "Text to speech"]];
+const isFilter = (f: string | undefined): f is ModelType | "all" => FILTERS.some(([id]) => id === f);
+
+/** The filter shown first: from a link like #models/tts (the voice pickers link here), else the last one used. */
+function startFilter(): ModelType | "all" {
+  const fromHash = location.hash.match(/^#models\/(\w+)/)?.[1];
+  if (isFilter(fromHash)) return fromHash;
+  try {
+    const saved = localStorage.getItem("echo.models.filter") ?? undefined;
+    return isFilter(saved) ? saved : "all";
+  } catch {
+    return "all";
+  }
 }
 
 const tone = { installed: "good", partial: "warn", missing: "dim", downloading: "accent" } as const;
@@ -23,6 +39,13 @@ export function Models() {
   const [models, setModels] = useState<ModelStatus[]>();
   const [error, setError] = useState("");
   const [buildLog, setBuildLog] = useState<string[]>([]);
+  const [filter, setFilter] = useState(startFilter);
+  const chooseFilter = (f: ModelType | "all") => {
+    setFilter(f);
+    try {
+      localStorage.setItem("echo.models.filter", f);
+    } catch {}
+  };
   const logRef = useRef<HTMLPreElement>(null);
 
   const load = () => api<ModelStatus[]>("/api/downloads").then((m) => {
@@ -68,8 +91,21 @@ export function Models() {
         </header>
         {error && <div className="text-bad text-sm border border-bad/40 rounded p-2">{error}</div>}
         {!models && <p className="text-dim text-sm">Checking sizes on Hugging Face…</p>}
+        {models && (
+          <div className="flex rounded-md border border-line overflow-hidden text-sm w-fit" role="tablist" aria-label="Model type">
+            {FILTERS.map(([id, label]) => {
+              const n = id === "all" ? models.length : models.filter((m) => m.type === id).length;
+              return (
+                <button key={id} role="tab" aria-selected={filter === id} onClick={() => chooseFilter(id)}
+                  className={`px-3 py-1.5 ${filter === id ? "bg-accent/20 text-accent" : "text-dim hover:text-text"}`}>
+                  {label} <span className="text-xs opacity-70">{n}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
-        {models?.map((m) => {
+        {models?.filter((m) => filter === "all" || m.type === filter).map((m) => {
           const have = m.job?.have ?? m.have;
           const total = m.job?.total || m.total;
           return (
@@ -79,6 +115,7 @@ export function Models() {
                   <div className="flex items-center gap-2"><h3 className="font-medium">{m.name}</h3><Badge tone={tone[m.state]}>{m.state}</Badge></div>
                   <div className="text-xs text-dim">{m.role} · {fmtBytes(m.total)}</div>
                   <p className="text-sm text-dim mt-1">{m.about}</p>
+                  {m.error && <p className="text-xs text-bad mt-1">{m.error}</p>}
                 </div>
                 <div className="flex gap-2">
                   {m.state === "downloading" ? (

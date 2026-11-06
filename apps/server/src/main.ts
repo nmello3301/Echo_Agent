@@ -16,7 +16,7 @@ import { buildStrata, cancelDownload, catalogStatus, startDownload } from "./dow
 import { activeMain, activeMainId, allEngines, engineById, huginEnv, startDecision, startHugin, startRag, startSearch, startStt, startTts, stopAll, useMainModel } from "./engines.ts";
 import { gitApp } from "./gitview.ts";
 import { type Effort, effortFields, type StreamResult, streamChat } from "./llm.ts";
-import { liveApp } from "./live.ts";
+import { liveApp, transcribe } from "./live.ts";
 import { lastSample, startMonitor } from "./monitor.ts";
 import { formatSources, indexStatus, listNotes, readNote, searchNotes, startIndexer, syncIndex } from "./rag.ts";
 import { dev, isDevHost, linkCheckout, proxyHttp, proxyUpgrade, verify, type VerifyStep } from "./selfdev.ts";
@@ -448,7 +448,7 @@ app.post("/api/read/tts", async (c) => {
   }
 });
 
-// The voices the Read tab can use: Piper and Pocket TTS defaults, plus voices cloned from a sample
+// The text-to-speech models (Piper, Pocket TTS, Kokoro, Qwen3-TTS, VoxCPM), their voices, and voices cloned from a sample
 app.get("/api/read/voices", async (c) => {
   try {
     const r = await tts("/voices");
@@ -459,11 +459,14 @@ app.get("/api/read/voices", async (c) => {
 });
 
 app.post("/api/read/voices", async (c) => {
-  const { name, audio } = await c.req.json<{ name: string; audio: string }>();
+  const { name, audio, engine, transcript } = await c.req.json<{ name: string; audio: string; engine?: string; transcript?: string }>();
   const m = /^data:audio\/(?:wav|x-wav|wave);base64,(.+)$/i.exec(audio ?? "");
   if (!m) return c.json({ error: "expected a WAV sample as a data: URL" }, 400);
   try {
-    const r = await tts("/voices", "POST", JSON.stringify({ name, audio: m[1] }));
+    // Qwen3-TTS and VoxCPM copy a voice best when they know the sample's words: transcribe it if none were typed
+    let words = transcript?.trim();
+    if (!words && (engine === "qwen3" || engine === "voxcpm")) words = (await transcribe(new Uint8Array(Buffer.from(m[1], "base64")))).text;
+    const r = await tts("/voices", "POST", JSON.stringify({ name, audio: m[1], engine, transcript: words }));
     return r.status === 200 ? c.json(ttsJson(r)) : ttsFailed(c, r);
   } catch (e) {
     return c.json(err(e), 503);

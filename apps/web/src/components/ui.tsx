@@ -105,3 +105,20 @@ export function Bar({ value, max = 1, tone = "accent" }: { value: number; max?: 
   const c = { accent: "bg-accent", good: "bg-good", warn: "bg-warn", bad: "bg-bad" }[tone];
   return <div className="h-1.5 bg-line rounded-full overflow-hidden"><div className={`h-full ${c} transition-all`} style={{ width: `${pct}%` }} /></div>;
 }
+
+/** A small "i" that opens a speech bubble on hover, focus or click: for a tip that would clutter the page. */
+export function InfoBubble({ children, label = "More information" }: { children: ReactNode; label?: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="relative inline-flex align-middle" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <button type="button" aria-label={label} aria-expanded={open} onClick={() => setOpen(!open)} onFocus={() => setOpen(true)} onBlur={() => setOpen(false)}
+        className={`w-4 h-4 rounded-full border text-[10px] font-semibold leading-none ${open ? "border-accent text-accent" : "border-dim text-dim hover:text-accent hover:border-accent"}`}>i</button>
+      {open && (
+        <span role="tooltip" className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-20 w-72 max-w-[80vw] rounded-lg border border-accent/40 bg-panel-2 px-3 py-2 text-xs font-normal text-text shadow-lg">
+          {children}
+          <span aria-hidden className="absolute left-1/2 -translate-x-1/2 top-full border-x-[7px] border-x-transparent border-t-[7px] border-t-accent/40" />
+        </span>
+      )}
+    </span>
+  );
+}

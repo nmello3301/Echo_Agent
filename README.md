@@ -42,18 +42,48 @@ Paste a screenshot (Ctrl+V, or *Paste from clipboard*) or type in the text box: 
 and speaks it (`services/tts`). *Auto summarize + read* speaks a 2-5 sentence summary from the active main model
 instead of the full text. Ctrl+Enter in the box reads it.
 
-*Change voice* lists the voices with a ▶ button to hear each one first (on your own test sentence, if you like):
+*Change voice* (in Read and in Live) picks a **model** first, then one of its voices, with a ▶ button to hear each
+one (on your own test sentence, if you like). Speeds are on the desktop's CPU (the GPU is the main model's): 2x real time
+means 10 s of speech takes 5 s to make, 0.5x means it takes 20 s.
 
-- **Default voices.** *Fast* voices are Piper: quick even for long texts, each one downloaded on first use into
-  `models/tts/`. *Natural* voices are Kyutai's Pocket TTS: more human, about 2x real time on the CPU, so better
-  for shorter texts and summaries. Its model (220 MB) downloads on first use into `models/tts/hf/`.
-- **Clone a voice.** Upload a recording (WAV, MP3, M4A, OGG or FLAC; 10-30 s of one person speaking clearly). The
-  browser trims and converts it, Pocket TTS turns it into a voice, and it is kept in `data/tts/voices/`. Kyutai's
-  cloning weights are free but gated: accept the terms at https://huggingface.co/kyutai/pocket-tts with a Hugging
-  Face account, then give Echo a read token: `HF_TOKEN=` in `.env` and `docker compose up -d` (Docker), or
-  `services/tts/.venv/bin/hf auth login` and `./echo restart` (native).
+| Model | Voices | Cloning | Speed (CPU) | Download |
+| --- | --- | --- | --- | --- |
+| **Piper** | 8 English voices | no | ~15x real time | each voice on first use (60-120 MB) |
+| **Pocket TTS** (Kyutai) | 21 English voices | yes (gated weights, see below) | ~2-3x real time | on first use (220 MB) |
+| **Kokoro 82M** (ONNX) | 41 voices: English, Spanish, French, Hindi, Italian, Brazilian Portuguese | no | ~4x real time | Models tab (337 MB) |
+| **Qwen3-TTS 0.6B** | 9 preset speakers, 10 languages | yes | ~0.5x real time | Models tab (4.7 GB) |
+| **VoxCPM2** (OpenBMB, 2B) | cloned voices only, 30 languages | yes | ~0.2x real time | Models tab (4.6 GB) |
 
-After updating a native install, run `services/tts/.venv/bin/pip install -r services/tts/requirements.txt` once.
+The Models tab's *Text to speech* filter shows the three downloads; a model that isn't downloaded yet links there.
+
+**Clone a voice** appears under models that can clone. Upload a recording (WAV, MP3, M4A, OGG or FLAC): the browser
+trims and converts it, the model turns it into a voice, and it is kept in `data/tts/voices/`. The ⓘ next to the
+heading says how long the sample should be for that model: Pocket TTS 10-15 s (uses the first 30 s), Qwen3-TTS
+10-20 s (3 s minimum; over 30 s can make it hang), VoxCPM2 10-30 s (5 s minimum). Qwen3-TTS and VoxCPM2 copy a
+voice more closely when they know the recording's words: type them in, or leave the box empty and Echo transcribes
+English recordings itself (Live's speech to text). Pocket TTS's cloning weights are free but gated: accept the terms
+at https://huggingface.co/kyutai/pocket-tts with a Hugging Face account, then give Echo a read token: `HF_TOKEN=` in
+`.env` and `docker compose up -d` (Docker), or `services/tts/.venv/bin/hf auth login` and `./echo restart` (native).
+
+**Compare models.** `node tools/voice-compare.ts` clones the same recordings in Qwen3-TTS and VoxCPM2, has each clone
+say the same sentences, and writes a page that plays them side by side (`--engines pocket,qwen3,voxcpm` adds Pocket
+TTS). With Echo running, put one recording per voice in `data/voice-compare/samples/`: about 15 s suits both models,
+and anything but a WAV needs `ffmpeg`. Add `<voice>.txt` with its exact words if you have them (needed for languages
+other than English), and `data/voice-compare/lines.txt` to choose the sentences, one per line. Then open
+`data/voice-compare/results/index.html`. The clones also appear in the voice pickers. Models that aren't ready are
+listed on the page; running the command again makes only what is missing or changed. Only clone voices you have
+permission to use.
+
+Qwen3-TTS and VoxCPM2 run in a separate worker process (`services/tts/worker.py`, venv `services/tts-torch/.venv`)
+that starts the first time you use one of their voices. Qwen3-TTS loads in ~5 s and takes ~2.5 GB of RAM per model
+(its preset speakers and its cloning are two models); VoxCPM2 loads in ~30 s and takes ~7 GB. Only one of the two
+stays loaded, and the worker stops after 10 minutes unused, which frees the memory. On the CPU both are slower than
+real time (bfloat16 where the CPU supports it, as this Ryzen does): Read waits for the whole text, and in Live they
+delay every answer (Live speaks each sentence as soon as it is written), which the picker says.
+
+After updating a native install, run `services/tts/.venv/bin/pip install -r services/tts/requirements.txt` once, and
+for Qwen3-TTS and VoxCPM2: `python3 -m venv services/tts-torch/.venv && services/tts-torch/.venv/bin/pip install -r
+services/tts-torch/requirements.txt`.
 
 ## Rules: what the agent may do without asking
 
@@ -64,6 +94,8 @@ The main model reads it at the start of each run, and the decision model sees a 
 ## Models tab
 
 One-click downloads of the models Echo uses, straight into the folders `models.yaml` points at. Downloads resume.
+The filter at the top shows one type at a time: *Language* (main models), *Decision* and *Text to speech* (Kokoro,
+Qwen3-TTS, VoxCPM2; whole Hugging Face repositories are listed through its API, so new files are picked up).
 Flash-Next also needs the Strata engine compiled, which needs the CUDA toolkit; the tab shows the command and a
 Build button.
 
@@ -174,8 +206,10 @@ as a "Live: ..." conversation. The **decide model** (Jebadiah, as in the Decide 
 odds between options in ~1-5 s. Ask for either by name ("ask the decide model ..."), or let the voice choose.
 
 Speech to text is Echo's own (`services/stt`: faster-whisper `base.en` on 8 CPU threads, ~0.35 s for a short
-question; its weights, ~145 MB, download into `models/stt/` on first use); the voices are the Read tab's Piper
-voices. Settings: `live` in `echo.yaml`. English only for now. Details: [docs/live-chat.md](docs/live-chat.md).
+question; its weights, ~145 MB, download into `models/stt/` on first use). *Change voice* is the Read tab's picker
+(its own choice, kept in the browser): any model and voice, cloned ones included. Live speaks each sentence as soon
+as it is written, so a slow model (Pocket TTS, Qwen3-TTS, VoxCPM2) delays every answer, and the picker says so.
+Settings: `live` in `echo.yaml`. English only for now. Details: [docs/live-chat.md](docs/live-chat.md).
 
 ## Git tab
 
