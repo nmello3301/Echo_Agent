@@ -46,6 +46,9 @@ env is set.
 
 `sdk/`: the Echo SDK (`index.ts`) and CLI (`cli.ts`) that drive agent runs; no dependencies.
 
+`tools/voice-compare.ts`: clones recordings in each TTS model through Echo's API and writes a page to compare them;
+no dependencies, runs on the host too.
+
 Speech to text: Echo has none of its own yet. Hugin's STT container answers inside Docker at `http://stt:8089`:
 `POST /transcribe` (multipart `file`) → `{text, segments}`; faster-whisper `distil-large-v3` int8 on CPU, English only,
 whole files only.
