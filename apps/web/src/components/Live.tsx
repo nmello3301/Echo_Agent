@@ -13,6 +13,8 @@ interface Turn {
   delayMs?: number;
   timings?: Record<string, number>;
   early?: boolean;
+  /** The voice model handed the question to the chat model or the decide model */
+  tool?: { model: "chat" | "decide"; ms?: number; answer?: string; web?: boolean };
   error?: string;
 }
 
@@ -220,6 +222,7 @@ class LiveEngine {
           t.user = data.text || "(nothing heard)";
           if (!data.text) done = true;
         } else if (event === "delta") t.echo += data.text;
+        else if (event === "tool") t.tool = { model: data.model, ms: data.ms, answer: data.answer, web: data.web };
         else if (event === "audio") {
           pendingAudio++;
           const bytes = Uint8Array.from(atob(data.wav), (c) => c.charCodeAt(0));
@@ -372,6 +375,7 @@ export function Live({ active }: { active: boolean }) {
             <div className="self-end bg-panel-2 border border-line rounded-lg px-3 py-1.5 max-w-[85%]">{t.user}</div>
             <div className="self-start max-w-[85%]">{t.echo || (t.error ? "" : "…")}</div>
             {t.error && <div className="text-sm text-bad">{t.error}</div>}
+            {t.tool && t.delayMs === undefined && !t.timings && <div className="flex text-[11px]"><ToolBadge tool={t.tool} /></div>}
             {(t.delayMs !== undefined || t.timings) && (
               <div className="flex flex-wrap gap-1 text-[11px]" title="From the end of your speech to the first sound of the answer, and where the time went">
                 {t.delayMs !== undefined && <Badge tone={t.delayMs <= 1500 ? "good" : "warn"}>{(t.delayMs / 1000).toFixed(2)} s to first sound</Badge>}
@@ -379,6 +383,7 @@ export function Live({ active }: { active: boolean }) {
                 {t.timings?.stt !== undefined && <Badge>speech to text {t.timings.stt} ms{t.early ? " (during the pause)" : ""}</Badge>}
                 {t.timings?.firstToken !== undefined && <Badge>first word {t.timings.firstToken} ms</Badge>}
                 {t.timings?.tts !== undefined && <Badge>voice {t.timings.tts} ms</Badge>}
+                {t.tool && <ToolBadge tool={t.tool} />}
               </div>
             )}
           </div>
@@ -386,4 +391,13 @@ export function Live({ active }: { active: boolean }) {
       </div>
     </div>
   );
+}
+
+function ToolBadge({ tool }: { tool: NonNullable<Turn["tool"]> }) {
+  const name = tool.model === "decide" ? "decide model" : tool.web ? "chat model (with the web)" : "chat model";
+  if (tool.ms === undefined) return <Badge tone="warn">asking the {name}…</Badge>;
+  const took = `${(tool.ms / 1000).toFixed(1)} s`;
+  return tool.model === "decide"
+    ? <Badge tone="good">checked the {name} in {took}: {tool.answer}</Badge>
+    : <span title="The full answer is saved as a conversation in the Chat tab"><Badge tone="good">checked the {name} in {took}: full answer in Chat</Badge></span>;
 }

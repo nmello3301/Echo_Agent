@@ -43,13 +43,32 @@ browser: decode ─► schedule gapless ─► play; listen again 300 ms after t
 
 | Endpoint | |
 | --- | --- |
-| `POST /turn?session&effort&voice` | body: WAV, or JSON `{text}`. SSE: `stt {text, ms}`, `delta {text}`, `audio {seq, text, wav}` (base64), `done {text, timings}`, `error {message}` |
+| `POST /turn?session&effort&voice` | body: WAV, or JSON `{text}`. SSE: `stt {text, ms}`, `delta {text}`, `audio {seq, text, wav}` (base64), `tool {name, model, ms?, ...}`, `done {text, timings}`, `error {message}` |
 | `POST /stt` | body: WAV → `{text, ms, audio_s}` |
 | `POST /prime?session` · `POST /warm?voice` | wake the model (and load the voice) |
 | `POST /reset?session` · `GET /config` | forget a conversation · the tab's defaults (echo.yaml `live`) |
 
 `timings` (ms from the moment the request arrived): `stt`, `firstToken`, `tts` (first chunk), `firstAudio`,
-`llm`, `total`.
+`llm`, `total`, and `tool` when another model was asked.
+
+## Handing off to the chat or decide model
+
+The voice model gets two tools: `ask_chat {question, web?}` and `decide {question, options?}`. When it calls one,
+the turn speaks "Let me think about that." (or "Let me weigh that up.") at once, sends `tool {name, model}`, asks the
+other model, sends `tool` again with the result (`ms`, the question, the decide answer or the saved conversation's
+id), then a second, thinking-off request turns the result into two or three spoken sentences. If the summary does
+not name the model, "I checked the chat/decide model." is spoken after it. Only the question and the spoken summary
+stay in the session's history.
+
+- **ask_chat** runs the Chat tab's request (effort medium; `web: true` uses Chat's search loop) and saves the
+  question and full answer as a "Live: ..." conversation, so the details are there to read.
+- **decide** sends a Decide-tab question to Jebadiah: yes/no (`noul`) or a choice between 2-6 options; it is logged
+  with `source: "live"`.
+- `/warm` and `/prime` render the same tools, so the cached prompt prefix still matches the turn's.
+
+Measured in text mode (2026-11-04, model idle and warm): decide ~1.3-5 s for the tool, "Let me weigh that up" at
+~1.2-3 s, the whole turn 4-10 s; ask_chat (Monty Hall, ~3,000-character answer) 15.8 s for the tool, the summary's
+first sound ~1.5 s after it, 21 s in all. A plain question still answers directly (Canberra: 1.5 s).
 
 ## Testing without a microphone
 
