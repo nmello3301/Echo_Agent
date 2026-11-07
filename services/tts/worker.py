@@ -18,6 +18,7 @@ import gc
 import io
 import json
 import os
+import subprocess
 import sys
 import time
 import wave
@@ -51,6 +52,30 @@ def bf16_cpu() -> bool:
     except OSError:
         return False
     return "avx512_bf16" in flags or "amx_bf16" in flags
+
+
+def gpu_free_mib() -> int:
+    """Free GPU memory, 0 without a usable GPU. Asks nvidia-smi: asking torch starts a CUDA context, which then holds
+    memory of its own for as long as this process lives."""
+    if not torch.cuda.is_available():
+        return 0
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10).stdout
+        return int(out.split()[0])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return 0
+
+
+def choose_device(engine) -> str:
+    """The GPU when the model fits there. Beside the 27B it doesn't, and a full card stalls both, so it runs on the CPU."""
+    engine.device = "cuda" if gpu_free_mib() >= engine.gpu_mib else "cpu"
+    return engine.device
+
+
+def release_memory() -> None:
+    gc.collect()
+    if torch.cuda.is_initialized():
+        torch.cuda.empty_cache()
 
 
 MAX_PROMPTS = 8  # cloned voices kept read, most recently used last
@@ -89,6 +114,8 @@ class Qwen3:
     """Qwen3-TTS 0.6B: the CustomVoice model speaks the preset speakers, the Base model clones."""
 
     threads = 4
+    gpu_mib = 4500  # free GPU memory to run there; one model peaked at +3.8 GB
+    device = "cpu"
 
     def __init__(self):
         self.models: dict = {}
@@ -106,9 +133,10 @@ class Qwen3:
             from qwen_tts import Qwen3TTSModel
 
             t0 = time.perf_counter()
-            dtype = torch.bfloat16 if bf16_cpu() else torch.float32
-            self.models[kind] = Qwen3TTSModel.from_pretrained(str(models_dir / "qwen3-tts" / kind), device_map="cpu", dtype=dtype)
-            loaded(f"Qwen3-TTS {kind}", t0)
+            on_gpu = choose_device(self) == "cuda"
+            dtype = torch.bfloat16 if on_gpu or bf16_cpu() else torch.float32
+            self.models[kind] = Qwen3TTSModel.from_pretrained(str(models_dir / "qwen3-tts" / kind), device_map="cuda:0" if on_gpu else "cpu", dtype=dtype)
+            loaded(f"Qwen3-TTS {kind} ({self.device})", t0)
         return self.models[kind]
 
     def prompt(self, voice: str):
@@ -135,6 +163,8 @@ class VoxCPM:
     more closely ("hi-fi" cloning); without them it still clones from the sound alone. Its weights are bfloat16."""
 
     threads = 8
+    gpu_mib = 7500  # peaked at +6.9 GB
+    device = "cpu"
 
     def __init__(self):
         self.m = None
@@ -152,9 +182,9 @@ class VoxCPM:
             from voxcpm import VoxCPM as Model
 
             t0 = time.perf_counter()
-            # no denoiser (an extra model from ModelScope, and it changes the voice); torch.compile is for CUDA
-            self.m = Model.from_pretrained(str(models_dir / "voxcpm"), load_denoiser=False, optimize=False, device="cpu")
-            loaded("VoxCPM2", t0)
+            # no denoiser (an extra model from ModelScope, and it changes the voice)
+            self.m = Model.from_pretrained(str(models_dir / "voxcpm"), load_denoiser=False, optimize=False, device=choose_device(self))
+            loaded(f"VoxCPM2 ({self.device})", t0)
         return self.m
 
     def prompt(self, voice: str):
@@ -206,7 +236,11 @@ def main() -> None:
                 for other in engines.values():
                     if other is not engine and other.loaded():
                         other.unload()
-                        gc.collect()
+                        release_memory()
+                # On the CPU because the GPU was full, and it no longer is (the 27B was unloaded, say): load it again
+                if engine.loaded() and engine.device == "cpu" and gpu_free_mib() >= engine.gpu_mib:
+                    engine.unload()
+                    release_memory()
             torch.set_num_threads(args.threads or engine.threads)
             if op == "tts":
                 t0 = time.perf_counter()

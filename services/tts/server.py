@@ -463,13 +463,13 @@ MODELS = {
     "kokoro": {"name": "Kokoro", "about": "82M-parameter model with natural voices in English, Spanish, French, Hindi, Italian "
                "and Brazilian Portuguese. No cloning.", "pace": "~4x faster than real time", "canClone": False},
     "qwen3": {"name": "Qwen3-TTS", "about": "Alibaba's 0.6B model: nine preset speakers, and it clones a voice from a few seconds "
-              "of speech. 10 languages, Portuguese included.", "pace": "about half real time: 10 s of speech takes ~20 s",
+              "of speech. 10 languages, Portuguese included.", "pace": "~0.6x on the GPU, ~0.3x on the CPU: 10 s of speech takes 17-30 s",
               "slow": True, "canClone": True, "transcript": True,
               "sample": {"min": 3, "max": 30, "ideal": [10, 20],
                          "tip": "Complete sentences at a normal pace, pauses under 2 s. It copies best when it has the exact words "
                                 "(Echo transcribes English ones); over 30 s can make it hang."}},
     "voxcpm": {"name": "VoxCPM2", "about": "OpenBMB's 2B model: copies a voice, accent and tone from a sample, in 30 languages. "
-               "Every voice is a cloned one.", "pace": "~0.2x real time: 10 s of speech takes ~50 s",
+               "Every voice is a cloned one.", "pace": "~1x on the GPU, ~0.2x on the CPU: 10 s of speech takes 10-50 s",
                "slow": True, "canClone": True, "transcript": True,
                "sample": {"min": 5, "max": 30, "ideal": [10, 30],
                           "tip": "At least 5 s; more clean speech copies better. The exact words help (Echo transcribes English "

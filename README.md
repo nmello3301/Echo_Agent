@@ -51,8 +51,8 @@ means 10 s of speech takes 5 s to make, 0.5x means it takes 20 s.
 | **Piper** | 8 English voices | no | ~15x real time | each voice on first use (60-120 MB) |
 | **Pocket TTS** (Kyutai) | 21 English voices | yes (gated weights, see below) | ~2-3x real time | on first use (220 MB) |
 | **Kokoro 82M** (ONNX) | 41 voices: English, Spanish, French, Hindi, Italian, Brazilian Portuguese | no | ~4x real time | Models tab (337 MB) |
-| **Qwen3-TTS 0.6B** | 9 preset speakers, 10 languages | yes | ~0.5x real time | Models tab (4.7 GB) |
-| **VoxCPM2** (OpenBMB, 2B) | cloned voices only, 30 languages | yes | ~0.2x real time | Models tab (4.6 GB) |
+| **Qwen3-TTS 0.6B** | 9 preset speakers, 10 languages | yes | ~0.6x on the GPU, ~0.3x on the CPU | Models tab (4.7 GB) |
+| **VoxCPM2** (OpenBMB, 2B) | cloned voices only, 30 languages | yes | ~1x on the GPU, ~0.2x on the CPU | Models tab (4.6 GB) |
 
 The Models tab's *Text to speech* filter shows the three downloads; a model that isn't downloaded yet links there.
 
@@ -77,9 +77,11 @@ permission to use.
 Qwen3-TTS and VoxCPM2 run in a separate worker process (`services/tts/worker.py`, venv `services/tts-torch/.venv`)
 that starts the first time you use one of their voices. Qwen3-TTS loads in ~5 s and takes ~2.5 GB of RAM per model
 (its preset speakers and its cloning are two models); VoxCPM2 loads in ~30 s and takes ~7 GB. Only one of the two
-stays loaded, and the worker stops after 10 minutes unused, which frees the memory. On the CPU both are slower than
-real time (bfloat16 where the CPU supports it, as this Ryzen does): Read waits for the whole text, and in Live they
-delay every answer (Live speaks each sentence as soon as it is written), which the picker says.
+stays loaded, and the worker stops after 10 minutes unused, which frees the memory. Each model runs on the GPU when it
+fits (Qwen3-TTS needs ~4.5 GB free, VoxCPM2 ~7.5 GB) and otherwise on the CPU, in bfloat16 where the CPU supports it, as
+this Ryzen does. The 27B normally fills the card, so stop it on the Monitor tab first; the next request then moves the
+model to the GPU. Only VoxCPM2 on the GPU keeps up with real time: otherwise Read waits for the whole text, and in Live
+they delay every answer (Live speaks each sentence as soon as it is written), which the picker says.
 
 After updating a native install, run `services/tts/.venv/bin/pip install -r services/tts/requirements.txt` once, and
 for Qwen3-TTS and VoxCPM2: `python3 -m venv services/tts-torch/.venv && services/tts-torch/.venv/bin/pip install -r

@@ -91,7 +91,7 @@ export const CATALOG: CatalogModel[] = [
     id: "qwen3-tts-0.6b",
     name: "Qwen3-TTS 0.6B",
     type: "tts",
-    role: "Text to speech · PyTorch on the CPU",
+    role: "Text to speech · PyTorch, on the GPU when it fits",
     about: "Nine preset speakers, and voice cloning from a few seconds of speech, in 10 languages (Portuguese included). Two models: CustomVoice speaks the presets, Base clones.",
     repos: [
       { repo: "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice", dest: "models/tts/qwen3-tts/custom-voice" },
@@ -102,7 +102,7 @@ export const CATALOG: CatalogModel[] = [
     id: "voxcpm2",
     name: "VoxCPM2",
     type: "tts",
-    role: "Text to speech · PyTorch on the CPU",
+    role: "Text to speech · PyTorch, on the GPU when it fits",
     about: "OpenBMB's 2B model: copies a voice, accent and tone from 5-30 s of speech, in 30 languages (Portuguese included). Every voice is a cloned one.",
     repos: [{ repo: "openbmb/VoxCPM2", dest: "models/tts/voxcpm" }],
   },

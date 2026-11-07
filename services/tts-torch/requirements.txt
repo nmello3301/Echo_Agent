@@ -1,6 +1,7 @@
-# Qwen3-TTS and VoxCPM2 for the TTS service's worker (services/tts/worker.py), CPU build of PyTorch.
+# Qwen3-TTS and VoxCPM2 for the TTS service's worker (services/tts/worker.py). The CUDA build of PyTorch, which also
+# runs on the CPU; worker.py picks one for each model.
 # Kept apart from services/tts: qwen-tts pins transformers 4.57.3 and both pull in heavy extras.
---extra-index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://download.pytorch.org/whl/cu134
 torch
 torchaudio
 qwen-tts==0.1.1
