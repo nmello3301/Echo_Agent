@@ -5,4 +5,7 @@
 torch
 torchaudio
 qwen-tts==0.1.1
+# Qwen3-TTS Fast (CUDA graphs). 0.3.2 is the last release on qwen-tts and transformers 4.x: 0.4+ moved to
+# qwen-tts-hf and transformers 5
+faster-qwen3-tts==0.3.2
 voxcpm==2.0.3

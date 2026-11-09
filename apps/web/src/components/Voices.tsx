@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, toDataUrl } from "../api.ts";
 import { Badge, Button, InfoBubble } from "./ui.tsx";
 
-export type Engine = "piper" | "pocket" | "kokoro" | "qwen3" | "voxcpm";
+export type Engine = "piper" | "pocket" | "kokoro" | "qwen3" | "qwen3fast" | "voxcpm";
 
 export interface Voice {
   id: string;

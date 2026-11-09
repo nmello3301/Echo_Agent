@@ -1,4 +1,4 @@
-"""Echo's text-to-speech service: five models behind one API.
+"""Echo's text-to-speech service: six models behind one API.
 
 - Piper: fast (~17x real time on CPU). Each voice is an .onnx file in --voices-dir, downloaded on first use (60-120 MB).
 - Kyutai Pocket TTS: more natural, slower (2 CPU cores), and it clones a voice from a short sample. Its model
@@ -8,6 +8,7 @@
 - Qwen3-TTS 0.6B and VoxCPM2: larger PyTorch models that clone a voice from a few seconds of speech (Qwen3-TTS also
   has preset speakers). They run in a worker process with its own venv (worker.py, services/tts-torch/.venv), started
   on first use: qwen-tts pins its own transformers, and both pull in heavy extras. Downloaded on the Models tab.
+- Qwen3-TTS Fast: Qwen3-TTS's files, voices and clones run through faster-qwen3-tts (CUDA graphs), on the GPU only.
 
 POST   /tts          {"text": "...", "speed": 1.0, "voice": "piper:en_US-lessac-medium"}  ->  audio/wav
 GET    /voices                                     ->  {"voices": [...], "models": [...], "default": "<id>"}
@@ -15,8 +16,9 @@ POST   /voices       {"name", "audio": "<base64 16-bit PCM WAV>", "engine", "tra
 DELETE /voices/<id>                                ->  {"ok": true}
 GET    /health                                     ->  {"status": "ok"}
 
-Voice ids: "piper:<voice>", "pocket:<voice>", "kokoro:<voice>", "qwen3:<speaker>", "clone:<id>". `speed` changes
-Piper and Kokoro voices; for the others the UI sets the playback rate.
+Voice ids: "piper:<voice>", "pocket:<voice>", "kokoro:<voice>", "qwen3:<speaker>", "clone:<id>", and "fast:" before a
+Qwen3-TTS voice's id for the same voice in Qwen3-TTS Fast. `speed` changes Piper and Kokoro voices; for the others the
+UI sets the playback rate.
 Cloned voices live in --clones-dir: <id>.json (name, engine, transcript), <id>.wav (the sample) and, for Pocket TTS,
 <id>.safetensors (the voice state). Clones made before there were several engines are Pocket TTS ones.
 
@@ -252,7 +254,8 @@ def die_with_parent() -> None:
 worker_thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts-worker")
 
 
-TORCH_ENGINES = ("qwen3", "voxcpm")
+TORCH_ENGINES = ("qwen3", "qwen3fast", "voxcpm")
+FAST = "fast:"  # Qwen3-TTS Fast speaks Qwen3-TTS's voices: "fast:qwen3:Ryan", "fast:clone:<id>"
 
 
 class Worker:
@@ -353,6 +356,11 @@ def clone_meta(vid: str) -> dict:
     return meta
 
 
+def fast(v: dict) -> dict:
+    """A Qwen3-TTS voice as Qwen3-TTS Fast lists it"""
+    return {**v, "id": FAST + v["id"], "engine": "qwen3fast"}
+
+
 def clones() -> list[dict]:
     out = []
     for f in sorted(clones_dir.glob("*.json")):
@@ -391,7 +399,7 @@ def clone_with_worker(name: str, audio_b64: str, engine: str, transcript: str) -
     name = " ".join(name.split())[:40]
     if not name:
         raise BadRequest("give the voice a name")
-    if not (qwen3_installed() if engine == "qwen3" else voxcpm_installed()):
+    if not (voxcpm_installed() if engine == "voxcpm" else qwen3_installed()):
         raise BadRequest(f"{MODELS[engine]['name']} isn't downloaded yet: download it on the Models tab")
     wav, seconds = read_sample(audio_b64)
     lo, hi = MODELS[engine]["sample"]["min"], MODELS[engine]["sample"]["max"]
@@ -401,15 +409,17 @@ def clone_with_worker(name: str, audio_b64: str, engine: str, transcript: str) -
     files = [clones_dir / f"{vid}.{ext}" for ext in ("wav", "json")]
     try:
         files[0].write_bytes(wav)
-        files[1].write_text(json.dumps({"name": name, "engine": engine, "transcript": " ".join(transcript.split()),
-                                        "created": time.strftime("%Y-%m-%dT%H:%M:%S")}))
+        # A clone made in Qwen3-TTS Fast is a Qwen3-TTS voice: both models list and speak it
+        files[1].write_text(json.dumps({"name": name, "engine": "qwen3" if engine == "qwen3fast" else engine,
+                                        "transcript": " ".join(transcript.split()), "created": time.strftime("%Y-%m-%dT%H:%M:%S")}))
         worker.call({"op": "prepare", "engine": engine, "voice": f"clone:{vid}"})
     except Exception:
         for f in files:
             f.unlink(missing_ok=True)
         raise
     print(f"tts: cloned voice {vid} with {engine} from {seconds:.1f} s of audio", flush=True)
-    return next(v for v in clones() if v["id"] == f"clone:{vid}")
+    made = next(v for v in clones() if v["id"] == f"clone:{vid}")
+    return fast(made) if engine == "qwen3fast" else made
 
 
 def clone_pocket(name: str, audio_b64: str) -> dict:
@@ -449,11 +459,15 @@ def delete_clone(vid: str) -> None:
             (clones_dir / f"{vid}.{ext}").unlink(missing_ok=True)
         pocket_states.pop(f"clone:{vid}", None)
     if engine in TORCH_ENGINES and worker.running():
-        worker.call({"op": "forget", "engine": engine, "voice": f"clone:{vid}"})
+        for e in ("qwen3", "qwen3fast") if engine == "qwen3" else (engine,):
+            worker.call({"op": "forget", "engine": e, "voice": f"clone:{vid}"})
 
 
-# What the UI shows for each model. `pace`: measured on the desktop's CPU (16 threads), 2026-11-05.
+# What the UI shows for each model. `pace`: measured on the desktop's CPU (16 threads), 2026-11-05, and its RTX 4090.
 # `sample`: the recording to clone from, in seconds (min, max used, ideal range), from each model's own advice.
+QWEN3_SAMPLE = {"min": 3, "max": 30, "ideal": [10, 20],
+                "tip": "Complete sentences at a normal pace, pauses under 2 s. It copies best when it has the exact words "
+                       "(Echo transcribes English ones); over 30 s can make it hang."}
 MODELS = {
     "piper": {"name": "Piper", "about": "Plain, clear voices that read long texts quickly.", "pace": "~15x faster than real time",
               "canClone": False},
@@ -464,10 +478,10 @@ MODELS = {
                "and Brazilian Portuguese. No cloning.", "pace": "~4x faster than real time", "canClone": False},
     "qwen3": {"name": "Qwen3-TTS", "about": "Alibaba's 0.6B model: nine preset speakers, and it clones a voice from a few seconds "
               "of speech. 10 languages, Portuguese included.", "pace": "~0.6x on the GPU, ~0.3x on the CPU: 10 s of speech takes 17-30 s",
-              "slow": True, "canClone": True, "transcript": True,
-              "sample": {"min": 3, "max": 30, "ideal": [10, 20],
-                         "tip": "Complete sentences at a normal pace, pauses under 2 s. It copies best when it has the exact words "
-                                "(Echo transcribes English ones); over 30 s can make it hang."}},
+              "slow": True, "canClone": True, "transcript": True, "sample": QWEN3_SAMPLE},
+    "qwen3fast": {"name": "Qwen3-TTS Fast", "about": "Qwen3-TTS with the same voices and clones, run with CUDA graphs "
+                  "(faster-qwen3-tts). GPU only: it needs ~4.5 GB free there, so not while the 27B is loaded.",
+                  "pace": "~3.5x faster than real time on the 4090; the first sentence after it loads takes ~20 s", "canClone": True, "transcript": True, "sample": QWEN3_SAMPLE},
     "voxcpm": {"name": "VoxCPM2", "about": "OpenBMB's 2B model: copies a voice, accent and tone from a sample, in 30 languages. "
                "Every voice is a cloned one.", "pace": "~1x on the GPU, ~0.2x on the CPU: 10 s of speech takes 10-50 s",
                "slow": True, "canClone": True, "transcript": True,
@@ -484,9 +498,10 @@ QWEN3_SPEAKERS = {
 
 
 def models() -> list[dict]:
-    installed = {"piper": True, "pocket": True, "kokoro": kokoro_installed(), "qwen3": qwen3_installed(), "voxcpm": voxcpm_installed()}
+    installed = {"piper": True, "pocket": True, "kokoro": kokoro_installed(), "qwen3": qwen3_installed(), "qwen3fast": qwen3_installed(),
+                 "voxcpm": voxcpm_installed()}
     cloning = {"pocket": None if pocket_model is None else pocket_model.has_voice_cloning,
-               "qwen3": installed["qwen3"], "voxcpm": installed["voxcpm"]}
+               "qwen3": installed["qwen3"], "qwen3fast": installed["qwen3"], "voxcpm": installed["voxcpm"]}
     return [{"id": k, **m, "installed": installed[k], "cloning": cloning.get(k, False)} for k, m in MODELS.items()]
 
 
@@ -499,10 +514,18 @@ def voices() -> dict:
     pocket_voices = [{"id": f"pocket:{v}", "name": v.replace("_", " ").title(), "engine": "pocket", "speed": False} for v in POCKET_VOICES]
     qwen3 = [{"id": f"qwen3:{k}", "name": n, "engine": "qwen3", "speed": False, "accent": a} for k, (n, a) in QWEN3_SPEAKERS.items()] \
         if qwen3_installed() else []
-    return {"voices": piper + pocket_voices + kokoro_voices() + qwen3 + clones(), "models": models(), "default": args.default}
+    own = clones()
+    fast_voices = [fast(v) for v in qwen3 + own if v["engine"] == "qwen3"]
+    return {"voices": piper + pocket_voices + kokoro_voices() + qwen3 + own + fast_voices, "models": models(), "default": args.default}
 
 
 def synthesize(text: str, speed: float, voice: str) -> bytes:
+    if voice.startswith(FAST):
+        inner = voice[len(FAST):]
+        kind, _, name = inner.partition(":")
+        if (clone_meta(name)["engine"] if kind == "clone" else kind) != "qwen3":
+            raise BadRequest(f"unknown voice {voice}: Qwen3-TTS Fast speaks Qwen3-TTS voices")
+        return worker.tts("qwen3fast", inner, text)
     kind, _, name = voice.partition(":")
     if kind == "clone":
         kind = clone_meta(name)["engine"]
@@ -555,7 +578,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
 
     def do_DELETE(self) -> None:
-        m = re.fullmatch(r"/voices/clone:(.+)", unquote(self.path))
+        m = re.fullmatch(r"/voices/(?:fast:)?clone:(.+)", unquote(self.path))
         if not m:
             return self._json(404, {"error": "not found"})
         self._run(lambda: self._delete(m[1]))

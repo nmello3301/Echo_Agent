@@ -52,6 +52,7 @@ means 10 s of speech takes 5 s to make, 0.5x means it takes 20 s.
 | **Pocket TTS** (Kyutai) | 21 English voices | yes (gated weights, see below) | ~2-3x real time | on first use (220 MB) |
 | **Kokoro 82M** (ONNX) | 41 voices: English, Spanish, French, Hindi, Italian, Brazilian Portuguese | no | ~4x real time | Models tab (337 MB) |
 | **Qwen3-TTS 0.6B** | 9 preset speakers, 10 languages | yes | ~0.6x on the GPU, ~0.3x on the CPU | Models tab (4.7 GB) |
+| **Qwen3-TTS Fast** | the same voices and clones as Qwen3-TTS | yes | ~3.5x on the GPU, GPU only | same files as Qwen3-TTS |
 | **VoxCPM2** (OpenBMB, 2B) | cloned voices only, 30 languages | yes | ~1x on the GPU, ~0.2x on the CPU | Models tab (4.6 GB) |
 
 The Models tab's *Text to speech* filter shows the three downloads; a model that isn't downloaded yet links there.
@@ -82,6 +83,18 @@ fits (Qwen3-TTS needs ~4.5 GB free, VoxCPM2 ~7.5 GB) and otherwise on the CPU, i
 this Ryzen does. The 27B normally fills the card, so stop it on the Monitor tab first; the next request then moves the
 model to the GPU. Only VoxCPM2 on the GPU keeps up with real time: otherwise Read waits for the whole text, and in Live
 they delay every answer (Live speaks each sentence as soon as it is written), which the picker says.
+
+**Qwen3-TTS Fast** is Qwen3-TTS run through [faster-qwen3-tts](https://github.com/andimarafioti/faster-qwen3-tts),
+which replays each decoding step as a captured CUDA graph. Plain Qwen3-TTS spends most of its time launching those
+small steps from Python, so it manages ~0.6x on the 4090 with the card a third busy; Fast makes ~3.5x real time on the
+same card (measured on the preset Ryan and two clones: 9 s of speech in ~2.5 s, a short sentence in ~0.3-0.5 s). It
+uses Qwen3-TTS's download, preset speakers and cloned voices (a clone made in either model shows in both), and it only
+runs on the GPU: each of its two models needs ~4.5 GB free (~3.2 GB each once loaded), so stop the 27B on the Monitor
+tab first, or it says so instead of speaking. The first sentence after it loads takes ~20 s (loading and capturing the
+graphs), and the worker unloads after 10 minutes unused.
+Both Qwen3-TTS models sometimes keep making sound after the text is said (3 of 16 tries at a ~5 s sentence made
+22-60 s): each sentence is capped at a generous length for its text, and one that reaches the cap is said again, up
+to three tries.
 
 After updating a native install, run `services/tts/.venv/bin/pip install -r services/tts/requirements.txt` once, and
 for Qwen3-TTS and VoxCPM2: `python3 -m venv services/tts-torch/.venv && services/tts-torch/.venv/bin/pip install -r

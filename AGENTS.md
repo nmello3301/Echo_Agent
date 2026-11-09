@@ -39,7 +39,8 @@ env is set.
 `services/`: Python, one venv each (`services/<name>/.venv`).
 - `tts/server.py`: TTS on port `tts` (echo.yaml). `POST /tts {text, voice, speed}` → WAV (whole file, not streamed);
   `GET /voices` → voices and models. Piper (fast, ~15x real time on CPU), Pocket TTS (natural, ~2x, clones voices),
-  Kokoro 82M (ONNX, ~4x); Qwen3-TTS 0.6B (~0.6x on the GPU, ~0.3x on the CPU) and VoxCPM2 (~1x, ~0.2x; both clone
+  Kokoro 82M (ONNX, ~4x); Qwen3-TTS 0.6B (~0.6x on the GPU, ~0.3x on the CPU), Qwen3-TTS Fast (faster-qwen3-tts,
+  CUDA graphs: ~3.5x, GPU only, voice ids `fast:<qwen3 id>`) and VoxCPM2 (~1x, ~0.2x; all three clone
   voices) run in `tts/worker.py`, on the GPU when they fit (not beside the 27B), a child process with its own venv
   `services/tts-torch/.venv`, stopped after 10 idle minutes. Their model files come
   from the Models tab (`models/tts/<model>/`).

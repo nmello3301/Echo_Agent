@@ -463,9 +463,9 @@ app.post("/api/read/voices", async (c) => {
   const m = /^data:audio\/(?:wav|x-wav|wave);base64,(.+)$/i.exec(audio ?? "");
   if (!m) return c.json({ error: "expected a WAV sample as a data: URL" }, 400);
   try {
-    // Qwen3-TTS and VoxCPM copy a voice best when they know the sample's words: transcribe it if none were typed
+    // Qwen3-TTS (Fast too) and VoxCPM copy a voice best when they know the sample's words: transcribe it if none were typed
     let words = transcript?.trim();
-    if (!words && (engine === "qwen3" || engine === "voxcpm")) words = (await transcribe(new Uint8Array(Buffer.from(m[1], "base64")))).text;
+    if (!words && (engine === "qwen3" || engine === "qwen3fast" || engine === "voxcpm")) words = (await transcribe(new Uint8Array(Buffer.from(m[1], "base64")))).text;
     const r = await tts("/voices", "POST", JSON.stringify({ name, audio: m[1], engine, transcript: words }));
     return r.status === 200 ? c.json(ttsJson(r)) : ttsFailed(c, r);
   } catch (e) {

@@ -91,8 +91,8 @@ export const CATALOG: CatalogModel[] = [
     id: "qwen3-tts-0.6b",
     name: "Qwen3-TTS 0.6B",
     type: "tts",
-    role: "Text to speech · PyTorch, on the GPU when it fits",
-    about: "Nine preset speakers, and voice cloning from a few seconds of speech, in 10 languages (Portuguese included). Two models: CustomVoice speaks the presets, Base clones.",
+    role: "Text to speech · PyTorch, on the GPU when it fits · also Qwen3-TTS Fast",
+    about: "Nine preset speakers, and voice cloning from a few seconds of speech, in 10 languages (Portuguese included). Two models: CustomVoice speaks the presets, Base clones. The same files give Qwen3-TTS Fast, which runs them on the GPU with CUDA graphs (faster-qwen3-tts) several times faster.",
     repos: [
       { repo: "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice", dest: "models/tts/qwen3-tts/custom-voice" },
       { repo: "Qwen/Qwen3-TTS-12Hz-0.6B-Base", dest: "models/tts/qwen3-tts/base" },

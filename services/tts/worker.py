@@ -7,9 +7,10 @@ own transformers, and both pull in heavy extras that the main TTS venv (Piper, P
 {"op": "forget", "engine", "voice"}       ->  {}   a deleted clone
 Errors: {"error": "...", "bad": true when the request was at fault}.
 
-Engines: "qwen3" (voices "qwen3:<speaker>" and "clone:<id>") and "voxcpm" ("clone:<id>" only). A clone is <id>.wav
-and <id>.json (its words in "transcript") in --clones-dir. Each model loads on its first request and stays loaded
-until the other engine is used: both together held 11 GB. server.py stops the whole worker when it sits unused.
+Engines: "qwen3" (voices "qwen3:<speaker>" and "clone:<id>"), "qwen3fast" (the same models, voices and clones through
+faster-qwen3-tts, GPU only) and "voxcpm" ("clone:<id>" only). A clone is <id>.wav and <id>.json (its words in
+"transcript") in --clones-dir. Each model loads on its first request and stays loaded until another engine is used:
+two together held 11 GB. server.py stops the whole worker when it sits unused.
 """
 
 import argparse
@@ -79,6 +80,12 @@ def release_memory() -> None:
 
 
 MAX_PROMPTS = 8  # cloned voices kept read, most recently used last
+CODEC_HZ = 12  # Qwen3-TTS's codec frames per second of sound
+
+
+def longest_s(text: str) -> float:
+    """More than any voice needs to say `text`: ~0.12 s a letter (speech runs 0.06-0.15), ~0.4 s a CJK character."""
+    return 3 + sum(0.4 if ord(c) >= 0x2E80 else 0.12 for c in text)
 
 
 class Bad(Exception):
@@ -139,23 +146,66 @@ class Qwen3:
             loaded(f"Qwen3-TTS {kind} ({self.device})", t0)
         return self.models[kind]
 
+    def qwen(self, kind: str):
+        """The qwen-tts model itself (it reads the samples)"""
+        return self.model(kind)
+
     def prompt(self, voice: str):
         def make():
             wav, words = sample(voice)
             # Without the words only the speaker's timbre is copied (x-vector), which sounds less like them
-            return self.model("base").create_voice_clone_prompt(ref_audio=str(wav), ref_text=words or None, x_vector_only_mode=not words)
+            return self.qwen("base").create_voice_clone_prompt(ref_audio=str(wav), ref_text=words or None, x_vector_only_mode=not words)
 
         return self.prompts.get_or(voice, make)
 
     def tts(self, voice: str, text: str):
         kind, _, name = voice.partition(":")
-        if kind == "clone":
-            wavs, rate = self.model("base").generate_voice_clone(text=text, language="Auto", voice_clone_prompt=self.prompt(voice))
-        elif kind == "qwen3":
-            wavs, rate = self.model("custom-voice").generate_custom_voice(text=text, language="Auto", speaker=name)
-        else:
+        if kind not in ("clone", "qwen3"):
             raise Bad(f"unknown voice {voice}")
-        return wavs[0], rate
+        # Qwen3-TTS sometimes keeps going after the text: 3 of 16 tries at a ~5 s sentence made 22-60 s of sound. Cap
+        # each try at a generous length for the text and try again when one reaches the cap (as VoxCPM's retry_badcase)
+        cap = longest_s(text)
+        best = None
+        for tries_left in (2, 1, 0):
+            if kind == "clone":
+                wavs, rate = self.model("base").generate_voice_clone(text=text, language="Auto", voice_clone_prompt=self.prompt(voice),
+                                                                     max_new_tokens=int(cap * CODEC_HZ))
+            else:
+                wavs, rate = self.model("custom-voice").generate_custom_voice(text=text, language="Auto", speaker=name,
+                                                                              max_new_tokens=int(cap * CODEC_HZ))
+            audio = np.asarray(wavs[0]).reshape(-1)
+            if best is None or len(audio) < len(best[0]):
+                best = (audio, rate)
+            if len(audio) / rate < cap - 0.5:
+                break
+            print(f"tts worker: {len(audio) / rate:.1f} s of sound for {len(text)} characters, the most allowed"
+                  + (", saying it again" if tries_left else ""), flush=True)
+        return best
+
+
+class FastQwen3(Qwen3):
+    """Qwen3-TTS through faster-qwen3-tts: the same models and voices, but each decoding step replays a captured CUDA
+    graph instead of launching its kernels one by one from Python. That step loop held plain Qwen3-TTS to ~0.6x real
+    time on the 4090 with the GPU a third busy. CUDA graphs need the GPU, so this engine never runs on the CPU."""
+
+    gpu_mib = 4500
+    device = "cuda"
+
+    def model(self, kind: str):
+        if kind not in self.models:
+            free = gpu_free_mib()
+            if free < self.gpu_mib:
+                raise Bad(f"Qwen3-TTS Fast runs on the GPU only and needs about {self.gpu_mib / 1024:.1f} GB free there "
+                          f"({free / 1024:.1f} GB is free now): stop the main model on the Monitor tab, or use Qwen3-TTS")
+            from faster_qwen3_tts import FasterQwen3TTS
+
+            t0 = time.perf_counter()
+            self.models[kind] = FasterQwen3TTS.from_pretrained(str(models_dir / "qwen3-tts" / kind), device="cuda", dtype=torch.bfloat16)
+            loaded(f"Qwen3-TTS Fast {kind}", t0)
+        return self.models[kind]
+
+    def qwen(self, kind: str):
+        return self.model(kind).model
 
 
 class VoxCPM:
@@ -222,7 +272,7 @@ def wav_b64(audio, rate: int) -> str:
 
 
 def main() -> None:
-    engines = {"qwen3": Qwen3(), "voxcpm": VoxCPM()}
+    engines = {"qwen3": Qwen3(), "qwen3fast": FastQwen3(), "voxcpm": VoxCPM()}
     print("tts worker: ready", flush=True)
     for line in sys.stdin:
         try:
