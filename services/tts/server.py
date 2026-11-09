@@ -10,7 +10,8 @@
   on first use: qwen-tts pins its own transformers, and both pull in heavy extras. Downloaded on the Models tab.
 - Qwen3-TTS Fast: Qwen3-TTS's files, voices and clones run through faster-qwen3-tts (CUDA graphs), on the GPU only.
 
-POST   /tts          {"text": "...", "speed": 1.0, "voice": "piper:en_US-lessac-medium"}  ->  audio/wav
+POST   /tts          {"text": "...", "speed": 1.0, "voice": "piper:en_US-lessac-medium", "tempo": 1.0}  ->  audio/wav
+                     (tempo: faster or slower speech at the same pitch, for any voice; Live's personas use it)
 GET    /voices                                     ->  {"voices": [...], "models": [...], "default": "<id>"}
 POST   /voices       {"name", "audio": "<base64 16-bit PCM WAV>", "engine", "transcript"}  ->  the cloned voice
 DELETE /voices/<id>                                ->  {"ok": true}
@@ -33,6 +34,7 @@ import io
 import json
 import re
 import secrets
+import shutil
 import signal
 import subprocess
 import sys
@@ -555,6 +557,28 @@ def synthesize(text: str, speed: float, voice: str) -> bytes:
     raise BadRequest(f"unknown voice {voice}")
 
 
+def stretch(wav: bytes, tempo: float) -> bytes:
+    """The speech `tempo` times as fast at the same pitch: sox's tempo effect, in its speech mode (~10 ms a sentence).
+    Without sox (a native install may lack it) the speech is left as it is."""
+    tempo = min(2.0, max(0.5, tempo))
+    if abs(tempo - 1) < 0.01 or not shutil.which("sox"):
+        return wav
+    # Raw samples out: sox can't go back to fill in a WAV header's length when it writes to a pipe (it says 0 s, which
+    # browsers may play as silence), so the header is written here
+    r = subprocess.run(["sox", "-t", "wav", "-", "-t", "raw", "-", "tempo", "-s", f"{tempo:.2f}"], input=wav, capture_output=True, timeout=30)
+    if r.returncode != 0 or not r.stdout:
+        return wav
+    with wave.open(io.BytesIO(wav)) as w:
+        channels, width, rate = w.getnchannels(), w.getsampwidth(), w.getframerate()
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(width)
+        w.setframerate(rate)
+        w.writeframes(r.stdout)
+    return out.getvalue()
+
+
 class Handler(BaseHTTPRequestHandler):
     def _json(self, code: int, obj: dict) -> None:
         body = json.dumps(obj).encode()
@@ -615,6 +639,7 @@ class Handler(BaseHTTPRequestHandler):
         if not text:
             raise BadRequest("no text")
         audio = synthesize(text, float(req.get("speed", 1.0)), str(req.get("voice") or args.default))
+        audio = stretch(audio, float(req.get("tempo") or 1.0))
         self.send_response(200)
         self.send_header("Content-Type", "audio/wav")
         self.send_header("Content-Length", str(len(audio)))

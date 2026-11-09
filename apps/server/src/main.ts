@@ -17,6 +17,7 @@ import { activeMain, activeMainId, allEngines, engineById, huginEnv, startDecisi
 import { gitApp } from "./gitview.ts";
 import { type Effort, effortFields, type StreamResult, streamChat } from "./llm.ts";
 import { liveApp, transcribe } from "./live.ts";
+import { personasApp } from "./personas.ts";
 import { lastSample, startMonitor } from "./monitor.ts";
 import { formatSources, indexStatus, listNotes, readNote, searchNotes, startIndexer, syncIndex } from "./rag.ts";
 import { dev, isDevHost, linkCheckout, proxyHttp, proxyUpgrade, verify, type VerifyStep } from "./selfdev.ts";
@@ -483,6 +484,7 @@ app.delete("/api/read/voices/:id", async (c) => {
 });
 
 // ---------- Live tab: hands-free voice chat (live.ts) ----------
+app.route("/api/live/personas", personasApp);
 app.route("/api/live", liveApp);
 
 app.get("/api/rules", (c) => c.json({ path: path.join(ROOT, "rules.md"), text: readFileSync(path.join(ROOT, "rules.md"), "utf8") }));

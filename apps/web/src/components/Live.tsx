@@ -3,11 +3,16 @@
 import { useEffect, useRef, useState } from "react";
 import { api, readSSE } from "../api.ts";
 import { Badge, Button, Select } from "./ui.tsx";
+import { type Persona, PersonaBar, usePersonas } from "./LivePersonas.tsx";
 import { ChangeVoice, stopVoiceTest, useVoices } from "./Voices.tsx";
 
 type Phase = "off" | "listening" | "hearing" | "thinking" | "speaking";
 interface Turn {
   id: number;
+  /** The persona it was said with ("echo": Echo's own); each one keeps its own conversation */
+  key: string;
+  /** The persona's greeting, said when the conversation started */
+  greeting?: boolean;
   user: string;
   echo: string;
   /** From the end of your speech to the first sound of the answer */
@@ -70,6 +75,9 @@ export function toWav16k(chunks: Float32Array[], rate: number): Uint8Array {
 }
 
 interface Settings {
+  /** The persona's id, "" for Echo's own; `key` names its conversation */
+  persona: string;
+  key: string;
   session: string;
   effort: string;
   voice: string;
@@ -117,7 +125,37 @@ class LiveEngine {
     this.ctx.createMediaStreamSource(this.stream).connect(this.node);
     this.noise = 0;
     this.listen();
-    void api(`/api/live/warm?voice=${encodeURIComponent(this.settings().voice)}`, { method: "POST" }).catch(() => {});
+    const s = this.settings();
+    void api(`/api/live/warm?voice=${encodeURIComponent(s.voice)}&persona=${s.persona}`, { method: "POST" }).catch(() => {});
+    void this.greet();
+  }
+
+  /** A persona's greeting, when it has one and this is the start of its conversation (the server checks both). */
+  async greet() {
+    const s = this.settings();
+    if (!s.persona || !this.ctx) return;
+    const id = ++this.turnId;
+    this.abort?.abort();
+    this.silence();
+    this.set("thinking");
+    const resume = () => this.turnId === id && this.phase !== "off" && this.listen();
+    try {
+      const g = await api<{ text: string; wav?: string }>(`/api/live/greet?session=${s.session}&persona=${s.persona}`, { method: "POST" });
+      if (!g.wav || !this.ctx || this.turnId !== id) return resume();
+      this.onTurn({ id, key: s.key, user: "", echo: g.text, greeting: true });
+      const buf = await this.ctx.decodeAudioData(Uint8Array.from(atob(g.wav), (c) => c.charCodeAt(0)).buffer);
+      if (!this.ctx || this.turnId !== id) return;
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(this.ctx.destination);
+      src.start();
+      this.sources.push(src);
+      this.set("speaking");
+      src.onended = () => setTimeout(resume, GUARD_MS);
+    } catch (e) {
+      if (this.turnId === id) this.onTurn({ id, key: s.key, user: "", echo: "", greeting: true, error: `Greeting: ${(e as Error).message}` });
+      resume();
+    }
   }
 
   stop() {
@@ -171,7 +209,7 @@ class LiveEngine {
         this.startAt = this.lastVoiceAt = now;
         this.set("hearing");
         // while they talk, wake the model and cache the conversation so far (see /api/live/prime)
-        void fetch(`/api/live/prime?session=${this.settings().session}`, { method: "POST" }).catch(() => {});
+        void fetch(`/api/live/prime?session=${this.settings().session}&persona=${this.settings().persona}`, { method: "POST" }).catch(() => {});
       }
       return;
     }
@@ -198,7 +236,7 @@ class LiveEngine {
   private async turn(speechEnd: number) {
     const s = this.settings();
     const id = ++this.turnId;
-    const t: Turn = { id, user: "…", echo: "" };
+    const t: Turn = { id, key: s.key, user: "…", echo: "" };
     this.onTurn({ ...t });
     this.set("thinking");
     const early = this.early;
@@ -213,7 +251,7 @@ class LiveEngine {
     };
     try {
       const pre = early && (await early.text);
-      const q = `session=${s.session}&effort=${s.effort}&voice=${encodeURIComponent(s.voice)}`;
+      const q = `session=${s.session}&effort=${s.effort}&voice=${encodeURIComponent(s.voice)}&persona=${s.persona}`;
       const r = await fetch(`/api/live/turn?${q}`, pre
         ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: pre.text }), signal: this.abort.signal }
         : { method: "POST", body: wav as Uint8Array<ArrayBuffer>, signal: this.abort.signal });
@@ -267,6 +305,7 @@ class LiveEngine {
 
   /** Stop talking now (Echo's audio and the turn in flight), then listen again. */
   interrupt() {
+    this.turnId++; // a greeting still being made is dropped too
     this.abort?.abort();
     this.silence();
     if (this.phase !== "off") this.listen();
@@ -292,23 +331,44 @@ const PHASE_TEXT: Record<Phase, string> = {
 
 export function Live({ active }: { active: boolean }) {
   const [phase, setPhase] = useState<Phase>("off");
-  const [turns, setTurns] = useState<Turn[]>([]);
-  const [effort, setEffort] = useState("off");
+  const [turnsBy, setTurnsBy] = useState<Record<string, Turn[]>>({});
+  const [echoEffort, setEchoEffort] = useState("off");
   const [defaultVoice, setDefaultVoice] = useState<string>(); // echo.yaml live.voice
   const [model, setModel] = useState<string>(); // echo.yaml live.model, or the loaded main model
-  const voices = useVoices("echo.live.voice", defaultVoice);
-  const voice = voices.voice?.id ?? defaultVoice ?? "piper:en_US-lessac-medium";
+  const echoVoices = useVoices("echo.live.voice", defaultVoice);
+  const personas = usePersonas();
+  const [personaId, setPersonaId] = useState(() => {
+    try {
+      return localStorage.getItem("echo.live.persona") ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const persona: Persona | undefined = personas.list.find((p) => p.id === personaId);
+  const key = persona?.id ?? "echo";
+  // With a persona chosen, the voice picker and the thinking switch are its own settings, saved as they change
+  const savePersona = (patch: Partial<Persona>) => persona && void personas.save({ ...persona, ...patch }).catch((e) => setError(e.message));
+  const voices = persona
+    ? { ...echoVoices, voice: echoVoices.list?.voices.find((v) => v.id === persona.voice) ?? echoVoices.voice, pick: (id: string) => savePersona({ voice: id }) }
+    : echoVoices;
+  const voice = persona?.voice ?? echoVoices.voice?.id ?? defaultVoice ?? "piper:en_US-lessac-medium";
+  const effort = persona?.effort ?? echoEffort;
+  const setEffort = (e: string) => (persona ? savePersona({ effort: e === "low" ? "low" : "off" }) : setEchoEffort(e));
   const [silenceMs, setSilenceMs] = useState(500);
-  const [session, setSession] = useState(() => crypto.randomUUID());
+  // one conversation per persona, so switching back resumes it
+  const sessionsBy = useRef(new Map<string, string>());
+  if (!sessionsBy.current.has(key)) sessionsBy.current.set(key, crypto.randomUUID());
+  const session = sessionsBy.current.get(key)!;
+  const turns = turnsBy[key] ?? [];
   const [level, setLevel] = useState(0);
   const [error, setError] = useState("");
-  const settings = useRef<Settings>({ session, effort, voice, silenceMs });
-  settings.current = { session, effort, voice, silenceMs };
+  const settings = useRef<Settings>({ persona: persona?.id ?? "", key, session, effort, voice, silenceMs });
+  settings.current = { persona: persona?.id ?? "", key, session, effort, voice, silenceMs };
   const engine = useRef<LiveEngine>(undefined);
 
   useEffect(() => {
     api<{ effort: string; voice: string; model?: string }>("/api/live/config").then((c) => {
-      setEffort(c.effort);
+      setEchoEffort(c.effort);
       setDefaultVoice(c.voice);
       setModel(c.model);
     }).catch(() => {});
@@ -329,9 +389,10 @@ export function Live({ active }: { active: boolean }) {
 
   async function start() {
     setError("");
-    const e = new LiveEngine(() => settings.current, setPhase, (t) => setTurns((ts) => {
+    const e = new LiveEngine(() => settings.current, setPhase, (t) => setTurnsBy((all) => {
+      const ts = all[t.key] ?? [];
       const i = ts.findIndex((x) => x.id === t.id);
-      return i < 0 ? [...ts, t] : ts.map((x) => (x.id === t.id ? t : x));
+      return { ...all, [t.key]: i < 0 ? [...ts, t] : ts.map((x) => (x.id === t.id ? t : x)) };
     }));
     engine.current = e;
     try {
@@ -343,8 +404,17 @@ export function Live({ active }: { active: boolean }) {
   }
   function newSession() {
     void api(`/api/live/reset?session=${session}`, { method: "POST" }).catch(() => {});
-    setSession(crypto.randomUUID());
-    setTurns([]);
+    sessionsBy.current.set(key, crypto.randomUUID());
+    setTurnsBy((all) => ({ ...all, [key]: [] }));
+    if (engine.current && phase !== "off") setTimeout(() => void engine.current?.greet(), 0); // after settings.current has the new session
+  }
+  function choose(id: string) {
+    setPersonaId(id);
+    try {
+      localStorage.setItem("echo.live.persona", id);
+    } catch {}
+    // talking already: the persona greets you when its conversation is new (after the settings have switched)
+    if (engine.current && phase !== "off") setTimeout(() => void engine.current?.greet(), 0);
   }
 
   const delays = turns.map((t) => t.delayMs).filter((d): d is number => d !== undefined);
@@ -365,7 +435,9 @@ export function Live({ active }: { active: boolean }) {
         <div className="flex-1" />
         <Button kind="ghost" onClick={newSession}>New conversation</Button>
       </div>
-      <ChangeVoice voices={voices} speed={1} live onTest={() => engine.current?.interrupt()} />
+      <PersonaBar personas={personas} selected={persona} onSelect={choose} voiceName={voices.voice?.name}
+        newDefaults={() => ({ voice, effort: effort === "low" ? "low" : "off" })} />
+      <ChangeVoice voices={voices} speed={persona?.speed ?? 1} live onTest={() => engine.current?.interrupt()} />
       <div className="flex items-center gap-3 text-sm">
         <span className={phase === "hearing" ? "text-good" : phase === "off" ? "text-dim" : "text-accent"}>{PHASE_TEXT[phase]}</span>
         {phase !== "off" && <div className="w-32 h-1.5 bg-line rounded-full overflow-hidden"><div className="h-full bg-good" style={{ width: `${Math.min(100, level * 600)}%` }} /></div>}
@@ -377,7 +449,7 @@ export function Live({ active }: { active: boolean }) {
       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-3" aria-live="polite">
         {turns.map((t) => (
           <div key={t.id} className="flex flex-col gap-1">
-            <div className="self-end bg-panel-2 border border-line rounded-lg px-3 py-1.5 max-w-[85%]">{t.user}</div>
+            {!t.greeting && <div className="self-end bg-panel-2 border border-line rounded-lg px-3 py-1.5 max-w-[85%]">{t.user}</div>}
             <div className="self-start max-w-[85%]">{t.echo || (t.error ? "" : "…")}</div>
             {t.error && <div className="text-sm text-bad">{t.error}</div>}
             {t.tool && t.delayMs === undefined && !t.timings && <div className="flex text-[11px]"><ToolBadge tool={t.tool} /></div>}

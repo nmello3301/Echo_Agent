@@ -44,10 +44,23 @@ browser: decode ─► schedule gapless ─► play; listen again 300 ms after t
 
 | Endpoint | |
 | --- | --- |
-| `POST /turn?session&effort&voice` | body: WAV, or JSON `{text}`. SSE: `stt {text, ms}`, `delta {text}`, `audio {seq, text, wav}` (base64), `tool {name, model, ms?, ...}`, `done {text, timings}`, `error {message}` |
+| `POST /turn?session&effort&voice&persona` | body: WAV, or JSON `{text}`. SSE: `stt {text, ms}`, `delta {text}`, `audio {seq, text, wav}` (base64), `tool {name, model, ms?, ...}`, `done {text, timings}`, `error {message}` |
 | `POST /stt` | body: WAV → `{text, ms, audio_s}` |
-| `POST /prime?session` · `POST /warm?voice` | wake the model (and load the voice) |
+| `POST /prime?session&persona` · `POST /warm?voice&persona` | wake the model (and load the voice) |
+| `POST /greet?session&persona` | the persona's greeting when its conversation is new: `{text, wav}` (base64), else `{text: ""}`; it joins the conversation |
 | `POST /reset?session` · `GET /config` | forget a conversation · the tab's defaults (echo.yaml `live`) |
+| `GET/POST /personas` · `PUT/DELETE /personas/:id` | personas (personas.ts, SQLite table `live_personas`) |
+
+## Personas
+
+A persona is a name, a voice, instructions and settings (thinking off/low, reply length short/medium/long, temperature
+or the model's own, speech speed 0.8-1.3x, a greeting, and whether it may call `ask_chat` and `decide`). Its system
+prompt is "You are <name>, talking with the user by voice...", then its instructions, then Live's spoken-style rules
+under "How to talk:" (the length rule follows its reply length; the helper rule and the tools follow what it may use).
+Echo's own prompt, without a persona, is unchanged. Reply length sets `max_tokens` (400, 700 or 1,400, plus 1,100 when
+thinking); speech speed is the TTS service's `tempo`, a pitch-keeping stretch with sox (~10 ms a sentence). The tab
+keeps one session per persona, so switching back resumes a conversation; with the persona chosen, the thinking switch
+and Change voice save to it.
 
 `timings` (ms from the moment the request arrived): `stt`, `firstToken`, `tts` (first chunk), `firstAudio`,
 `llm`, `total`, and `tool` when another model was asked.

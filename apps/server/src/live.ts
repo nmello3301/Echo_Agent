@@ -9,17 +9,42 @@ import { abs, config, type MainModel } from "./config.ts";
 import { db, now } from "./db.ts";
 import { type Answer, decisions, type Questions } from "./decision.ts";
 import { activeMain, activeMainId, startStt, useMainModel } from "./engines.ts";
+import { getPersona, type Persona, type ReplyLength } from "./personas.ts";
 import { type Effort, effortFields, type StreamResult, streamChat, type ToolCall } from "./llm.ts";
 import { chatWithWeb } from "./webchat.ts";
 
-const SYSTEM = `You are Echo, talking with the user by voice: everything you write is spoken aloud.
-- Answer in one to three short sentences of plain spoken English, starting with the answer itself.
-- No markdown, lists, headings, code, emoji or links. Write numbers, units and symbols the way they are said.
-- If a full answer would be long, give the gist and offer to say more.
-- If the user's words make no sense (a speech recognition slip), say what you heard and ask them to repeat.
-- You can hand a question to the chat model (ask_chat) or the decide model (decide). Answer directly whenever a few
+const LENGTH_RULE: Record<ReplyLength, string> = {
+  short: "- Answer in one to three short sentences of plain spoken English, starting with the answer itself.",
+  medium: "- Answer in up to six sentences of plain spoken English, starting with the answer itself.",
+  long: "- Answer as fully as the question needs, in plain spoken English and short sentences, starting with the answer itself.",
+};
+// Room for the answer (thinking adds its own): 400 tokens never cut a three-sentence answer
+const REPLY_TOKENS: Record<ReplyLength, number> = { short: 400, medium: 700, long: 1400 };
+
+function helperRule(chat: boolean, decide: boolean): string {
+  if (chat && decide) return `- You can hand a question to the chat model (ask_chat) or the decide model (decide). Answer directly whenever a few
   sentences will do. Use ask_chat for questions that need careful reasoning, current facts or a detailed answer, and
   decide when the user wants a judgement or a decision. Always use them when the user asks you to.`;
+  if (chat) return "- You can hand a question to the chat model (ask_chat). Answer directly whenever a few sentences will do. Use ask_chat for " +
+    "questions that need careful reasoning, current facts or a detailed answer, and always when the user asks you to.";
+  if (decide) return "- You can ask the decide model (decide) when the user wants a judgement or a decision, and always when they ask you to.";
+  return "";
+}
+
+/** Live's system prompt: Echo's own, or a persona's instructions above the same spoken-style rules (whatever a
+ *  persona is told, its answers must stay speakable). */
+export function systemPrompt(p?: Persona): string {
+  const helpers = p?.helpers ?? { chat: true, decide: true };
+  const rules = [
+    LENGTH_RULE[p?.length ?? "short"],
+    "- No markdown, lists, headings, code, emoji or links. Write numbers, units and symbols the way they are said.",
+    ...(p?.length === "long" ? [] : ["- If a full answer would be long, give the gist and offer to say more."]),
+    "- If the user's words make no sense (a speech recognition slip), say what you heard and ask them to repeat.",
+    helperRule(helpers.chat, helpers.decide),
+  ].filter(Boolean).join("\n");
+  const intro = `You are ${p?.name ?? "Echo"}, talking with the user by voice: everything you write is spoken aloud.`;
+  return p?.prompt ? `${intro}\n\n${p.prompt}\n\nHow to talk:\n${rules}` : `${intro}\n${rules}`;
+}
 
 // The voice model's tools: the Chat tab's model (thinking, optionally the web) and the Decide tab's model
 const LIVE_TOOLS = [
@@ -57,6 +82,18 @@ const LIVE_TOOLS = [
   },
 ];
 const CHAT_EFFORT: Effort = "medium";
+
+/** The tools a persona may use (all of them without one), as request fields */
+export function liveTools(p?: Persona) {
+  const tools = LIVE_TOOLS.filter((t) => (t.function.name === "decide" ? (p?.helpers.decide ?? true) : (p?.helpers.chat ?? true)));
+  return tools.length ? { tools } : {};
+}
+
+/** A persona's generation settings for a request: reply room and, when it set one, the temperature */
+function replyFields(p: Persona | undefined, effort: Effort) {
+  const room = REPLY_TOKENS[p?.length ?? "short"];
+  return { max_tokens: effort === "off" ? room : room + 1100, ...(p?.temperature != null ? { temperature: p.temperature } : {}) };
+}
 
 /** The Decide tab's question format for a spoken decision: a choice between options, or yes/no. */
 export function decideQuestions(question: string, options?: unknown): Questions {
@@ -193,9 +230,10 @@ export class Chunker {
 }
 
 /** One chunk of speech as a WAV, from the TTS service (Piper voices take ~50-150 ms for a sentence). */
-async function synth(text: string, voice: string | undefined, signal: AbortSignal): Promise<Uint8Array> {
+async function synth(text: string, voice: string | undefined, signal: AbortSignal, tempo = 1): Promise<Uint8Array> {
+  // tempo: a persona's speech speed, applied by the TTS service without changing the pitch
   const r = await fetch(`http://127.0.0.1:${config.echo.ports.tts}/tts`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, voice, speed: 1 }), signal,
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, voice, speed: 1, tempo }), signal,
   });
   if (!r.ok) throw new Error(`text to speech: ${((await r.json().catch(() => ({}))) as { error?: string }).error ?? r.status}`);
   return new Uint8Array(await r.arrayBuffer());
@@ -256,6 +294,7 @@ liveApp.post("/turn", async (c) => {
   const sessionId = c.req.query("session") || randomUUID();
   const effort = (c.req.query("effort") || config.echo.live?.effort || "off") as Effort;
   const voice = c.req.query("voice") || config.echo.live?.voice;
+  const persona = getPersona(c.req.query("persona"));
   return streamSSE(c, async (stream) => {
     const ac = new AbortController();
     stream.onAbort(() => ac.abort());
@@ -282,7 +321,7 @@ liveApp.post("/turn", async (c) => {
         const i = seq++;
         speaking = speaking.then(async () => {
           const t = performance.now();
-          const audio = await synth(text, voice, ac.signal);
+          const audio = await synth(text, voice, ac.signal, persona?.speed);
           if (i === 0) Object.assign(timings, { tts: Math.round(performance.now() - t), firstAudio: at() });
           await send("audio", { seq: i, text, wav: Buffer.from(audio).toString("base64") });
         });
@@ -298,10 +337,10 @@ liveApp.post("/turn", async (c) => {
         void send("delta", { text: d.content });
         for (const chunk of chunker.push(d.content)) speak(chunk);
       };
-      const history = [{ role: "system", content: SYSTEM }, ...s.messages];
+      const history = [{ role: "system", content: systemPrompt(persona) }, ...s.messages];
       let res = await streamChat(m, {
-        messages: history, tools: LIVE_TOOLS,
-        ...effortFields(m, effort), max_tokens: effort === "off" ? 400 : 1500, cache_prompt: true,
+        messages: history, ...liveTools(persona),
+        ...effortFields(m, effort), ...replyFields(persona, effort), cache_prompt: true,
       }, onDelta, ac.signal, "live");
       const call = res.toolCalls[0];
       if (call?.function.name && !res.aborted) {
@@ -317,7 +356,7 @@ liveApp.post("/turn", async (c) => {
         res = await streamChat(m, {
           messages: [...history, { role: "assistant", content: res.content, tool_calls: [{ ...call, id: call.id || "call_0" }] },
             { role: "tool", tool_call_id: call.id || "call_0", content: used.result }],
-          ...effortFields(m, "off"), max_tokens: 400, cache_prompt: true,
+          ...effortFields(m, "off"), ...replyFields(persona, "off"), cache_prompt: true,
         }, onDelta, ac.signal, "live");
         const rest = chunker.flush();
         if (rest) speak(rest);
@@ -352,8 +391,9 @@ liveApp.post("/warm", async (c) => {
     await startStt();
     const t = performance.now();
     const voice = c.req.query("voice") || config.echo.live?.voice;
+    const persona = getPersona(c.req.query("persona"));
     await Promise.all([
-      streamChat(m, { messages: [{ role: "system", content: SYSTEM }, { role: "user", content: "Hello." }], tools: LIVE_TOOLS, ...effortFields(m, "off"), max_tokens: 1, cache_prompt: true }, () => {}, new AbortController().signal, "live"),
+      streamChat(m, { messages: [{ role: "system", content: systemPrompt(persona) }, { role: "user", content: "Hello." }], ...liveTools(persona), ...effortFields(m, "off"), max_tokens: 1, cache_prompt: true }, () => {}, new AbortController().signal, "live"),
       synth("Ready.", voice, AbortSignal.timeout(60_000)), // loads the voice (a cold first sentence took ~0.9 s)
     ]);
     return c.json({ ok: true, ms: Math.round(performance.now() - t) });
@@ -369,14 +409,31 @@ liveApp.post("/prime", async (c) => {
   try {
     const m = await mainModel();
     const s = sessions.get(c.req.query("session") ?? "");
+    const persona = getPersona(c.req.query("persona"));
     const t = performance.now();
     await streamChat(m, {
-      messages: [{ role: "system", content: SYSTEM }, ...(s?.messages ?? []), { role: "user", content: "…" }], tools: LIVE_TOOLS,
+      messages: [{ role: "system", content: systemPrompt(persona) }, ...(s?.messages ?? []), { role: "user", content: "…" }], ...liveTools(persona),
       ...effortFields(m, "off"), max_tokens: 1, cache_prompt: true,
     }, () => {}, new AbortController().signal, "live");
     return c.json({ ok: true, ms: Math.round(performance.now() - t) });
   } catch (e) {
     return c.json(err(e), 503);
+  }
+});
+
+/** A persona's greeting, said when Live starts a conversation with it: {text, wav (base64)}, or {text: ""} when it has
+ *  none or the conversation has begun. The greeting joins the conversation, so the model knows it said it. */
+liveApp.post("/greet", async (c) => {
+  const persona = getPersona(c.req.query("persona"));
+  const s = session(c.req.query("session") || randomUUID());
+  const text = persona ? speakable(persona.greeting) : "";
+  if (!persona || !text || s.messages.length) return c.json({ text: "" });
+  try {
+    const wav = await synth(text, persona.voice, AbortSignal.timeout(90_000), persona.speed);
+    s.messages.push({ role: "assistant", content: text });
+    return c.json({ text, wav: Buffer.from(wav).toString("base64") });
+  } catch (e) {
+    return c.json(err(e), 502);
   }
 });
 

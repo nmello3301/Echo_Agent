@@ -226,6 +226,15 @@ question; its weights, ~145 MB, download into `models/stt/` on first use). *Chan
 as it is written, so a slow model (Pocket TTS, Qwen3-TTS, VoxCPM2) delays every answer, and the picker says so.
 Settings: `live` in `echo.yaml`. English only for now. Details: [docs/live-chat.md](docs/live-chat.md).
 
+**Personas.** *Talk to* picks who answers: Echo, or a persona you made with **+ New persona**. A persona has a name,
+its own instructions (who it is, how it talks), a greeting it says when a conversation starts, thinking off or low,
+reply length (short, medium or long), temperature (or the model's own), speech speed (0.8-1.3x, same pitch) and
+whether it may hand questions to the chat and decide models. While a persona is chosen, Change voice and the thinking
+switch set its voice and thinking, any voice including clones. Each persona keeps its own conversation: switch away
+and back and it carries on; **New conversation** starts its over (with its greeting). Echo puts its spoken-style rules
+(short spoken sentences, no lists, emoji or links) after a persona's instructions, so its answers can always be read
+aloud. Personas are kept in Echo's database (`data/echo.db`).
+
 **Live's model.** Live answers with a smaller main model than the rest of Echo, **MiMo-V2.6 Distill 9B** (`live.model`
 in `echo.yaml`; the tab says "answers with ..."). The 27B fills the GPU, so no GPU voice fits beside it; the 9B leaves
 ~8 GB, room for Qwen3-TTS Fast (~3.5x real time with cloned voices). Only one main model fits at a time: **Start**

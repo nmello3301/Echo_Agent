@@ -21,6 +21,7 @@ gitview.ts) rather than growing main.ts.
   Hugin). `get(spec).start()` starts or adopts a process and waits for its health URL.
 - `llm.ts`: `streamChat(model, body, onDelta, signal, source)`, OpenAI-compatible streaming to the main model;
   `effortFields(model, effort)` sets reasoning effort.
+- `live.ts`: the Live tab's voice turns; `personas.ts`: its personas (routes at /api/live/personas).
 - `webchat.ts`: Chat's web-search tool loop. `rag.ts`: notes search. `decision.ts`: Jebadiah decision client.
 - `config.ts`: echo.yaml and models.yaml (hot-reloaded), `ROOT`, `dockerEnv`, `attach` (dev-instance mode).
 - `db.ts` SQLite schema · `bus.ts` event bus · `stats.ts` live speed numbers · `monitor.ts` CPU/GPU/RAM sampler ·

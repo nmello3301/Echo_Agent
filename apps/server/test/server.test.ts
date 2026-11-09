@@ -383,6 +383,37 @@ describe("live chat", () => {
     }
   });
 
+  test("a persona's instructions sit above Live's spoken rules, and it only gets the helpers it may use", async () => {
+    const { systemPrompt, liveTools } = await import("../src/live.ts");
+    const { cleanPersona } = await import("../src/personas.ts");
+    const echo = systemPrompt();
+    assert.ok(echo.startsWith("You are Echo, talking with the user by voice"), "Echo's own prompt is unchanged");
+    assert.ok(echo.includes("one to three short sentences") && echo.includes("ask_chat") && !echo.includes("How to talk"));
+    assert.equal(liveTools().tools?.length, 2);
+    const lambda = cleanPersona({ name: "  Lambda ", prompt: "You are a dry-witted engineer.", length: "long", helpers: { chat: false, decide: true } }, "lambda-1");
+    const prompt = systemPrompt(lambda);
+    assert.ok(prompt.startsWith("You are Lambda, talking with the user by voice"));
+    assert.ok(prompt.indexOf("dry-witted engineer") < prompt.indexOf("No markdown, lists"), "the spoken rules come after the persona's words");
+    assert.ok(!prompt.includes("ask_chat") && prompt.includes("decide model") && !prompt.includes("give the gist"));
+    assert.deepEqual(liveTools(lambda).tools?.map((t) => t.function.name), ["decide"]);
+    assert.deepEqual(liveTools({ ...lambda, helpers: { chat: false, decide: false } }), {}, "no helpers: no tools at all");
+  });
+
+  test("personas are checked as they are saved", async () => {
+    const { cleanPersona, personasApp } = await import("../src/personas.ts");
+    assert.throws(() => cleanPersona({ name: "   " }, "x"), /name/);
+    const p = cleanPersona({ name: "Gamma", speed: 3, temperature: -1, effort: "high" as never, length: "huge" as never }, "g");
+    assert.deepEqual([p.speed, p.temperature, p.effort, p.length, p.helpers], [1.3, 0, "off", "short", { chat: true, decide: true }]);
+    const made = await (await personasApp.request("/", { method: "POST", body: JSON.stringify({ name: "Gamma", greeting: "Hi there." }) })).json();
+    assert.match(made.id, /^gamma-[0-9a-f]{6}$/);
+    const changed = await (await personasApp.request(`/${made.id}`, { method: "PUT", body: JSON.stringify({ ...made, speed: 1.1 }) })).json();
+    assert.equal(changed.speed, 1.1);
+    assert.deepEqual((await (await personasApp.request("/")).json()).map((x: { name: string }) => x.name), ["Gamma"]);
+    assert.equal((await personasApp.request("/nope", { method: "PUT", body: "{}" })).status, 404);
+    await personasApp.request(`/${made.id}`, { method: "DELETE" });
+    assert.deepEqual(await (await personasApp.request("/")).json(), []);
+  });
+
   test("the summary names the model it checked", async () => {
     const { mentionsModel } = await import("../src/live.ts");
     assert.ok(mentionsModel("I checked the Chat model.", "chat"));
