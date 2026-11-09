@@ -33,6 +33,7 @@ interface CatalogModel {
 const HF = "https://huggingface.co";
 const hf = (repo: string, file: string, rev = "main") => `${HF}/${repo}/resolve/${rev}/${file}`;
 
+const MIMO = "ggml-org/MiMo-V2.6-Distill-Qwen-9B-GGUF";
 const QWEN27 = "unsloth/Qwen3.8-27B-GGUF";
 const JEB = "frontier-infra/jebadiah-9b-v2-GGUF";
 const FLASH = "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF";
@@ -53,6 +54,14 @@ export const CATALOG: CatalogModel[] = [
       { url: hf(QWEN27, "mmproj-F16.gguf"), dest: "models/qwen27b/mmproj-F16.gguf" },
       { url: hf(QWEN27, "MTP/mtp-Qwen3.8-27B-Q4_0.gguf"), dest: "models/qwen27b/mtp-Qwen3.8-27B-Q4_0.gguf" },
     ],
+  },
+  {
+    id: "mimo-v2.6-9b",
+    name: "MiMo-V2.6 Distill 9B (Q8_0)",
+    type: "main",
+    role: "Main model · llama.cpp · Live's model",
+    about: "Xiaomi's 9B, tuned from Qwen3.5 9B, with image input. Live answers with it: it leaves ~8 GB of the GPU free, room for a fast voice such as Qwen3-TTS Fast, which the 27B doesn't.",
+    files: ["MiMo-V2.6-Distill-Qwen-9B-Q8_0.gguf", "mmproj-MiMo-V2.6-Distill-Qwen-9B-Q8_0.gguf"].map((f) => ({ url: hf(MIMO, f), dest: `models/mimo-9b/${f}` })),
   },
   {
     id: "qwen3.8-flash-next",

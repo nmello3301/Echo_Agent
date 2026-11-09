@@ -26,6 +26,24 @@ main:
     reasoning_levels: [off, low, medium, high]
     max_concurrency: 1
 
+  - id: mimo-v2.6-9b
+    name: MiMo-V2.6 Distill 9B (Q8_0, llama.cpp)
+    engine: llama-server
+    port: 8081
+    base_url: http://127.0.0.1:8081/v1
+    model: models/mimo-9b/MiMo-V2.6-Distill-Qwen-9B-Q8_0.gguf
+    mmproj: models/mimo-9b/mmproj-MiMo-V2.6-Distill-Qwen-9B-Q8_0.gguf
+    # Live's model (echo.yaml live.model): beside it ~8 GB of the 4090 stays free, enough for Qwen3-TTS Fast's voices
+    context: 65536
+    threads: 8
+    kv_cache: q8_0
+    mmproj_on_cpu: true        # Live never sends images; keeps 0.6 GB of VRAM for the voice
+    supports_tools: true
+    supports_vision: true
+    # Its chat template only has thinking on or off: low, medium and high all think the same way
+    reasoning_levels: [off, low, medium, high]
+    max_concurrency: 1
+
   - id: qwen3.8-flash-next
     name: Qwen3.8-Flash-Next (IQ2_XS, Strata)
     engine: strata

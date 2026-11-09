@@ -71,7 +71,8 @@ Time to first token with effort `off` (no thinking): 0.4-0.7 s for a short promp
 idle (GPU clocks up), plus ~0.6 s per 1K prompt tokens not already cached. Effort `low` thinks first: the answer starts
 ~1 s later on a simple question, more on hard ones. llama-server reuses the cached prefix when earlier messages stay
 byte-identical and new ones are only appended.
-VRAM is ~95% used by the 27B and its 32K context: another GPU model will not fit beside it.
+VRAM is ~95% used by the 27B and its 32K context: another GPU model will not fit beside it. Live answers with its own
+main model (echo.yaml `live.model`, MiMo-V2.6 Distill 9B, ~8 GB left free for a GPU voice), swapped in for the 27B.
 
 ## Verify and run your copy
 

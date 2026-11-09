@@ -215,7 +215,7 @@ first (better on hard questions, ~1.5 s+ slower). **Interrupt** stops it mid-ans
 the conversation. Each turn shows its delay and where the time went.
 
 For harder questions the voice hands off to another model, says so ("Let me think about that"), and comes back
-with a short spoken summary that names the model it checked. The **chat model** (the Chat tab's model, thinking at
+with a short spoken summary that names the model it checked. The **chat model** (Live's own model, thinking at
 medium, with web search for current facts) writes a full answer in ~10-20 s; that answer is saved in the Chat tab
 as a "Live: ..." conversation. The **decide model** (Jebadiah, as in the Decide tab) gives a yes/no probability or
 odds between options in ~1-5 s. Ask for either by name ("ask the decide model ..."), or let the voice choose.
@@ -225,6 +225,13 @@ question; its weights, ~145 MB, download into `models/stt/` on first use). *Chan
 (its own choice, kept in the browser): any model and voice, cloned ones included. Live speaks each sentence as soon
 as it is written, so a slow model (Pocket TTS, Qwen3-TTS, VoxCPM2) delays every answer, and the picker says so.
 Settings: `live` in `echo.yaml`. English only for now. Details: [docs/live-chat.md](docs/live-chat.md).
+
+**Live's model.** Live answers with a smaller main model than the rest of Echo, **MiMo-V2.6 Distill 9B** (`live.model`
+in `echo.yaml`; the tab says "answers with ..."). The 27B fills the GPU, so no GPU voice fits beside it; the 9B leaves
+~8 GB, room for Qwen3-TTS Fast (~3.5x real time with cloned voices). Only one main model fits at a time: **Start**
+loads the 9B in place of the 27B, and Chat or an agent run loads the 27B again when it is the model picked there
+(~2-3 min). Until the 9B is downloaded (Models tab, 10 GB) Live uses whichever main model is loaded. It is a weaker
+model than the 27B: with thinking off it got 17 x 23 wrong and sometimes answered with lists.
 
 ## Git tab
 

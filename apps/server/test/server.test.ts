@@ -365,6 +365,24 @@ describe("live chat", () => {
     assert.equal(describeDecision({ type: "choice", probabilities: { A: 0.2, B: 0.8 } }, ["tea", "coffee"]), "coffee: 80 percent, tea: 20 percent");
   });
 
+  test("Live answers with live.model once it is downloaded, else with the main model", async () => {
+    const { liveModelId } = await import("../src/live.ts");
+    const saved = { live: config.echo.live, main: config.models.main };
+    const file = path.join(tmp, "small.gguf");
+    try {
+      config.models.main = [{ ...llama, id: "big", model: path.join(tmp, "big.gguf") }, { ...llama, id: "small", model: file }];
+      config.echo.live = { ...saved.live, model: "small" };
+      assert.equal(liveModelId(), config.echo.default_model, "not downloaded: whatever main model Echo runs");
+      writeFileSync(file, "x");
+      assert.equal(liveModelId(), "small");
+      config.echo.live = { ...saved.live, model: "missing" };
+      assert.equal(liveModelId(), config.echo.default_model, "an id models.yaml doesn't have");
+    } finally {
+      Object.assign(config.echo, { live: saved.live });
+      config.models.main = saved.main;
+    }
+  });
+
   test("the summary names the model it checked", async () => {
     const { mentionsModel } = await import("../src/live.ts");
     assert.ok(mentionsModel("I checked the Chat model.", "chat"));

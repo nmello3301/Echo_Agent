@@ -2,9 +2,10 @@
 // (services/stt, faster-whisper on the CPU) → the main model, streamed → speakable chunks → text to speech (Piper)
 // per chunk, each sent back the moment it is ready, so Echo starts talking while the model is still writing.
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { config, type MainModel } from "./config.ts";
+import { abs, config, type MainModel } from "./config.ts";
 import { db, now } from "./db.ts";
 import { type Answer, decisions, type Questions } from "./decision.ts";
 import { activeMain, activeMainId, startStt, useMainModel } from "./engines.ts";
@@ -200,8 +201,18 @@ async function synth(text: string, voice: string | undefined, signal: AbortSigna
   return new Uint8Array(await r.arrayBuffer());
 }
 
+/** The model Live answers with: echo.yaml `live.model` once it is downloaded (a 9B leaves the GPU room for a fast
+ *  voice; the 27B fills it), else whichever main model is loaded. Only one main model fits, so this swaps it in. */
+export function liveModelId(): string {
+  const want = config.echo.live?.model;
+  const m = config.models.main.find((x) => x.id === want);
+  if (want && m && (m.engine === "strata" ? existsSync(abs(m.command ?? "-")) : existsSync(abs(m.model ?? "-")))) return want;
+  return activeMainId ?? config.echo.default_model;
+}
+
 async function mainModel(): Promise<MainModel> {
-  if (activeMain()?.engine.status !== "ready") await useMainModel(activeMainId ?? config.echo.default_model);
+  const id = liveModelId();
+  if (activeMainId !== id || activeMain()?.engine.status !== "ready") await useMainModel(id);
   return activeMain()!.model;
 }
 
@@ -229,7 +240,8 @@ const err = (e: unknown) => ({ error: (e as Error).message ?? String(e) });
 /** The defaults the Live tab starts with (echo.yaml `live`). */
 liveApp.get("/config", (c) => {
   const live = config.echo.live ?? {};
-  return c.json({ effort: live.effort ?? "off", voice: live.voice ?? "piper:en_US-lessac-medium", sttModel: live.stt_model ?? "base.en" });
+  const model = config.models.main.find((m) => m.id === liveModelId());
+  return c.json({ effort: live.effort ?? "off", voice: live.voice ?? "piper:en_US-lessac-medium", sttModel: live.stt_model ?? "base.en", model: model?.name });
 });
 
 /** One voice turn. Body: the utterance as a WAV. Query: session (keeps the conversation), effort, voice.

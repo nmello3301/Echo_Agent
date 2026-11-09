@@ -12,7 +12,8 @@ browser: mic ─► AudioWorklet ─► end-of-speech detection ─┬─ speech
                                                          │                                            cache the history)
                                                          ├─ 200 ms silence ─► POST /api/live/stt     (transcribe early)
                                                          └─ 500 ms silence ─► POST /api/live/turn    ({text}, or the WAV)
-server (live.ts):  text ─► main model, streamed (spoken-style system prompt + session history)
+server (live.ts):  text ─► Live's model (echo.yaml live.model, a 9B swapped in for the 27B), streamed (spoken-style
+                        system prompt + session history)
                         ─► Chunker: first chunk may end at a clause break, then sentence ends
                         ─► Piper per chunk ─► SSE `audio` events, in order, as each is ready
 browser: decode ─► schedule gapless ─► play; listen again 300 ms after the last chunk ends

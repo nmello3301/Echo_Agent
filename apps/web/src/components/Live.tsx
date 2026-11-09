@@ -295,6 +295,7 @@ export function Live({ active }: { active: boolean }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [effort, setEffort] = useState("off");
   const [defaultVoice, setDefaultVoice] = useState<string>(); // echo.yaml live.voice
+  const [model, setModel] = useState<string>(); // echo.yaml live.model, or the loaded main model
   const voices = useVoices("echo.live.voice", defaultVoice);
   const voice = voices.voice?.id ?? defaultVoice ?? "piper:en_US-lessac-medium";
   const [silenceMs, setSilenceMs] = useState(500);
@@ -306,9 +307,10 @@ export function Live({ active }: { active: boolean }) {
   const engine = useRef<LiveEngine>(undefined);
 
   useEffect(() => {
-    api<{ effort: string; voice: string }>("/api/live/config").then((c) => {
+    api<{ effort: string; voice: string; model?: string }>("/api/live/config").then((c) => {
       setEffort(c.effort);
       setDefaultVoice(c.voice);
+      setModel(c.model);
     }).catch(() => {});
   }, []);
   useEffect(() => {
@@ -368,6 +370,7 @@ export function Live({ active }: { active: boolean }) {
         <span className={phase === "hearing" ? "text-good" : phase === "off" ? "text-dim" : "text-accent"}>{PHASE_TEXT[phase]}</span>
         {phase !== "off" && <div className="w-32 h-1.5 bg-line rounded-full overflow-hidden"><div className="h-full bg-good" style={{ width: `${Math.min(100, level * 600)}%` }} /></div>}
         <div className="flex-1" />
+        {model && <span className="text-xs text-dim" title="echo.yaml live.model: starting Live loads it in place of the main model">answers with {model}</span>}
         {delays.length > 0 && <span className="text-xs text-dim">median delay {(delays.sort((a, b) => a - b)[Math.floor(delays.length / 2)] / 1000).toFixed(2)} s over {delays.length}</span>}
       </div>
       {error && <div className="text-sm text-bad border border-bad/40 rounded p-2">{error}</div>}

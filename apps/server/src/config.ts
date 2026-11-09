@@ -60,7 +60,7 @@ export interface EchoConfig {
   monitor: { interval_ms: number };
   notes: { dirs: string[]; hugin_dir: string };
   /** Live tab: speech-to-text model and CPU threads (services/stt), and the answers' default thinking level and voice */
-  live?: { stt_model?: string; stt_threads?: number; effort?: string; voice?: string };
+  live?: { stt_model?: string; stt_threads?: number; effort?: string; voice?: string; model?: string };
   /** Git tab: folders whose git repositories it shows, and GitHub repositories ("owner/name") for pull requests */
   git?: { dirs?: string[]; github?: string[] };
 }
