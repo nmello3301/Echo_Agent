@@ -272,10 +272,24 @@ export async function useMainModel(id: string): Promise<void> {
     }
     activeMainId = id;
     publish({ type: "active_model", id });
-    await get(mainSpec(m)).start();
+    const main = get(mainSpec(m));
+    if (gpu && main.status !== "ready" && main.status !== "starting") await releaseTtsGpu();
+    await main.start();
   };
   switching = (switching ?? Promise.resolve()).catch(() => {}).then(run);
   return switching;
+}
+
+/** The TTS worker's PyTorch models (Qwen3-TTS, its Fast variant, VoxCPM2) can sit on the GPU, and a main model loading
+ *  beside them doesn't fit: the 27B's load failed with Qwen3-TTS Fast's 3 GB still there. The TTS service stops its
+ *  worker; the next request starts it again, on the CPU if the card is full. */
+async function releaseTtsGpu(): Promise<void> {
+  try {
+    const r = await fetch(`http://127.0.0.1:${config.echo.ports.tts ?? 8095}/release`, { method: "POST", signal: AbortSignal.timeout(60_000) });
+    if (((await r.json()) as { stopped?: boolean }).stopped) console.log("[engines] stopped the TTS worker to free the GPU for the main model");
+  } catch {
+    // TTS not up yet (Echo is starting) or stuck on a long request: load the model anyway
+  }
 }
 
 /** Restart the running helper llama-servers so they pick up helpersOnGpu. */

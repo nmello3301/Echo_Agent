@@ -14,6 +14,7 @@ POST   /tts          {"text": "...", "speed": 1.0, "voice": "piper:en_US-lessac-
 GET    /voices                                     ->  {"voices": [...], "models": [...], "default": "<id>"}
 POST   /voices       {"name", "audio": "<base64 16-bit PCM WAV>", "engine", "transcript"}  ->  the cloned voice
 DELETE /voices/<id>                                ->  {"ok": true}
+POST   /release      stops the PyTorch worker, freeing its GPU memory for a main model  ->  {"stopped": bool}
 GET    /health                                     ->  {"status": "ok"}
 
 Voice ids: "piper:<voice>", "pocket:<voice>", "kokoro:<voice>", "qwen3:<speaker>", "clone:<id>", and "fast:" before a
@@ -284,14 +285,28 @@ class Worker:
 
     def _stop_if_idle(self) -> None:
         if self.running() and time.monotonic() - self.last > self.IDLE_S:
-            print(f"tts: stopping the PyTorch worker ({self.IDLE_S // 60} min unused, frees its memory)", flush=True)
-            assert self.proc and self.proc.stdin
-            self.proc.stdin.close()  # it exits at the end of its input
-            try:
-                self.proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-            self.proc = None
+            self._stop(f"{self.IDLE_S // 60} min unused")
+
+    def release(self) -> bool:
+        """Stop the worker now (after the request it is on), so its GPU memory is free for a main model that is about
+        to load: the 27B fills the card, and its load failed with Qwen3-TTS Fast still there. True if it was running."""
+        def stop() -> bool:
+            if not self.running():
+                return False
+            self._stop("a main model is loading")
+            return True
+
+        return worker_thread.submit(stop).result()
+
+    def _stop(self, why: str) -> None:
+        print(f"tts: stopping the PyTorch worker ({why}, frees its memory)", flush=True)
+        assert self.proc and self.proc.stdin
+        self.proc.stdin.close()  # it exits at the end of its input
+        try:
+            self.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+        self.proc = None
 
     def _call(self, req: dict) -> dict:
         self.last = time.monotonic()
@@ -574,6 +589,8 @@ class Handler(BaseHTTPRequestHandler):
             self._run(self._tts)
         elif self.path == "/voices":
             self._run(self._clone)
+        elif self.path == "/release":
+            self._run(lambda: self._json(200, {"stopped": worker.release()}))
         else:
             self._json(404, {"error": "not found"})
 

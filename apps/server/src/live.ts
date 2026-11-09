@@ -274,6 +274,9 @@ liveApp.post("/turn", async (c) => {
           if (i === 0) Object.assign(timings, { tts: Math.round(performance.now() - t), firstAudio: at() });
           await send("audio", { seq: i, text, wav: Buffer.from(audio).toString("base64") });
         });
+        // A failed chunk is reported by `await speaking` below, once the reply is written. Until then nothing awaits it,
+        // and Node ends the whole server on an unhandled rejection (Qwen3-TTS Fast refusing a full GPU did that).
+        speaking.catch(() => {});
       };
       let chunker = new Chunker();
       const llm0 = performance.now();
