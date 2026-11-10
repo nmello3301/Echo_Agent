@@ -16,7 +16,8 @@ gitview.ts) rather than growing main.ts.
 `apps/server/src/`
 - `main.ts`: every HTTP route (Hono) and the `/ws` WebSocket; startup and shutdown at the bottom.
 - `agent.ts`: agent runs on the Pi coding agent (`AgentRun`): tool gating by rules.md, decision time, timeline events
-  (`emit` → bus → `/ws` and `GET /api/agent/runs/:id/events`).
+  (`emit` → bus → `/ws` and `GET /api/agent/runs/:id/events`). `compaction.ts`: when a run compacts (echo.yaml
+  `agent.compact_at`, 70% of the window) and Echo's summary (Pi's, plus the plan and the user's messages word for word).
 - `engines.ts`: the `Engine` class and one `*Spec()` per process (main model, decision model, notes RAG, TTS, SearXNG,
   Hugin). `get(spec).start()` starts or adopts a process and waits for its health URL.
 - `llm.ts`: `streamChat(model, body, onDelta, signal, source)`, OpenAI-compatible streaming to the main model;

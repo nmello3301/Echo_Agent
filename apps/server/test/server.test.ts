@@ -424,12 +424,76 @@ describe("live chat", () => {
 });
 
 describe("context", () => {
-  test("compaction keeps a quarter of the window and leaves room for a full turn", async () => {
-    const { compactionSettings } = await import("../src/agent.ts");
-    assert.deepEqual(compactionSettings(32768), { reserveTokens: 10240, keepRecentTokens: 8192 }, "the old 32K behaviour");
-    assert.deepEqual(compactionSettings(65536), { reserveTokens: 10486, keepRecentTokens: 16384 });
-    const s = compactionSettings(24576); // Strata's window
+  test("compaction starts at 70% of the window, keeps a quarter and leaves room for a full turn", async () => {
+    const { compactionSettings, compactsAt, contextSettings } = await import("../src/compaction.ts");
+    const d = contextSettings({});
+    assert.deepEqual(d, { auto: true, at: 0.7, keep: 0.25 });
+    assert.deepEqual(compactionSettings(131072, d), { enabled: true, reserveTokens: 39322, keepRecentTokens: 32768 });
+    assert.equal(compactsAt(131072, d), 91750);
+    assert.deepEqual(compactionSettings(65536, d), { enabled: true, reserveTokens: 19661, keepRecentTokens: 16384 });
+    assert.equal(compactionSettings(32768, d).reserveTokens, 10240, "small windows keep room for a whole turn");
+    const s = compactionSettings(24576, d); // Strata's window
     assert.ok(s.reserveTokens >= 8192 + 1024 && s.keepRecentTokens < 24576 - s.reserveTokens);
+    assert.equal(compactionSettings(131072, contextSettings({ auto_compact: false })).enabled, false);
+    assert.deepEqual(contextSettings({ compact_at: 2, keep_recent: 0.9 }), { auto: true, at: 0.9, keep: 0.45 }, "clamped");
+    assert.equal(contextSettings({ compact_at: 0.7, keep_recent: 0.6 }).keep, 0.35, "what is kept leaves room to work");
+  });
+
+  test("Echo's compaction: Pi's summary with Echo's focus, no thinking, then the plan and messages word for word", async () => {
+    const { echoCompaction, echoPart, stripEchoPart, ECHO_PART } = await import("../src/compaction.ts");
+    const state = {
+      plan: [{ text: "Add the route", status: "done" }, { text: "Test it", status: "in_progress" }, { text: "Docs", status: "pending" }],
+      userMessages: [{ ts: Date.UTC(2026, 10, 10, 14, 2), text: "Use port 9000, not 8000." }],
+      checkpoints: [{ sha: "0123456789abcdef", label: "before edit batch 1" }],
+    };
+    const part = echoPart(state);
+    assert.match(part, /- \[done\] Add the route\n- \[now\] Test it\n- \[todo\] Docs/);
+    assert.match(part, /14:02 UTC: Use port 9000, not 8000\./);
+    assert.match(part, /0123456789 before edit batch 1/);
+    assert.equal(stripEchoPart(`summary${part}`), "summary");
+    assert.equal(stripEchoPart("no part"), "no part");
+
+    let body: any;
+    const srv = createServer((req, res) => {
+      let raw = "";
+      req.on("data", (c) => (raw += c));
+      req.on("end", () => {
+        body = JSON.parse(raw);
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "## Goal\nShip the route." } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 50, completion_tokens: 6, total_tokens: 56 } })}\n\n`);
+        res.end("data: [DONE]\n\n");
+      });
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    const model = {
+      id: "m", name: "m", api: "openai-completions", provider: "echo", baseUrl: `http://127.0.0.1:${(srv.address() as any).port}/v1`,
+      reasoning: true, input: ["text"], contextWindow: 131072, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      compat: { supportsDeveloperRole: false, supportsStore: false, thinkingFormat: "chat-template", maxTokensField: "max_tokens",
+        chatTemplateKwargs: { enable_thinking: { $var: "thinking.enabled" } } },
+    };
+    const preparation = {
+      firstKeptEntryId: "e5", isSplitTurn: false, turnPrefixMessages: [], tokensBefore: 92000,
+      messagesToSummarize: [{ role: "user", content: [{ type: "text", text: "Add a /ping route." }], timestamp: 1 }],
+      previousSummary: `## Goal\nOlder work.${ECHO_PART}## Plan\n- [todo] the old plan`,
+      fileOps: { read: new Set(["a.ts"]), written: new Set<string>(), edited: new Set(["b.ts"]) },
+      settings: { enabled: true, reserveTokens: 39322, keepRecentTokens: 32768 },
+    };
+    const event = { type: "session_before_compact", preparation, branchEntries: [], reason: "threshold", willRetry: false, signal: new AbortController().signal, customInstructions: "the port" };
+    const r = await echoCompaction(event as any, model, state);
+    srv.close();
+    const prompt = JSON.stringify(body.messages);
+    assert.match(prompt, /Additional focus: The summary replaces the conversation for a coding agent/);
+    assert.match(prompt, /The user asked to focus on: the port/);
+    assert.match(prompt, /Older work\./, "the previous summary is updated");
+    assert.ok(!prompt.includes("the old plan"), "Echo's old part is not summarized again");
+    assert.equal(body.chat_template_kwargs?.enable_thinking ?? false, false, "no thinking");
+    assert.equal(r.firstKeptEntryId, "e5");
+    assert.equal(r.tokensBefore, 92000);
+    assert.ok(r.summary.startsWith("## Goal\nShip the route."));
+    assert.match(r.summary, /<read-files>\na\.ts\n<\/read-files>/);
+    assert.match(r.summary, /<modified-files>\nb\.ts\n<\/modified-files>/);
+    assert.ok(r.summary.endsWith(part), "Echo's part comes last");
   });
 });
 

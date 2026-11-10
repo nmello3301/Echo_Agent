@@ -23,6 +23,7 @@ import { abs, config, type MainModel } from "./config.ts";
 import { db, now } from "./db.ts";
 import { type Answer, decisions, type Questions } from "./decision.ts";
 import { activeMain, useMainModel } from "./engines.ts";
+import { compactionSettings, compactsAt, contextSettings, echoCompaction } from "./compaction.ts";
 import { checkpoint, diffSince, diffStat, initRepo, isRepo, revertTo } from "./git.ts";
 import { effortFields, streamChat } from "./llm.ts";
 import { echoCheckout } from "./selfdev.ts";
@@ -65,8 +66,10 @@ export interface RunOptions {
   stepBudget?: number;
 }
 
+const K = (n: number) => `${Math.round(n / 1024)}K`;
 const systemAppend = (m: MainModel) => `You are Echo's coding agent, running locally on the user's own GPU (${m.name}). Your context window is
-${Math.round((m.context ?? 32768) / 1024)}K tokens and older turns get compacted, so context is your scarcest resource:
+${K(m.context ?? 32768)} tokens. Past ${K(compactsAt(m.context ?? 32768))}, older turns are replaced by a summary (your plan, the user's
+messages and the latest turns stay word for word), so context is your scarcest resource:
 - Keep replies and tool calls short. Find code with grep or find first, then read only the lines you need (offset/limit).
 - Keep a plan with the todo tool and update it as you go.
 - When a subtask is done, or you are unsure how to continue, call the checkpoint tool with a short summary.
@@ -105,14 +108,6 @@ function resultText(result: any): string {
   const c = result?.content;
   if (Array.isArray(c)) return c.map((x: any) => (x.type === "text" ? x.text : `[${x.type}]`)).join("\n");
   return typeof result === "string" ? result : JSON.stringify(result ?? "");
-}
-
-/** When Pi compacts (reserve: the context left free) and how much recent conversation it keeps word for word.
- *  Pi's defaults (reserve 16384, keep 20000) suit large windows; with 24K they would compact at 8K and keep more than
- *  fits. Keeping a quarter of the window: at 32K a compacted run had only 8-12K of room left and compacted every
- *  ~2 minutes; at 64K it has ~30K. The reserve covers one full turn (maxTokens 8192) plus slack. */
-export function compactionSettings(context: number) {
-  return { reserveTokens: Math.max(10240, Math.round(context * 0.16)), keepRecentTokens: Math.round(context / 4) };
 }
 
 export interface ExplainInput {
@@ -235,6 +230,11 @@ export class AgentRun {
   private stopped = false;
   private hitCapWithoutTool = false;
   private autoContinues = 0;
+  /** Pi's model object, for Echo's compaction summaries */
+  private piModel: unknown;
+  /** What the user said after the task, word for word: kept through compactions */
+  userMessages: { ts: number; text: string }[] = [];
+  private compactionStarted = 0;
   rules: Rules = loadRules();
   opts: RunOptions;
   /** The Echo working copy this run works in, if any: it gets the echo_* self-work tools and instructions */
@@ -281,6 +281,7 @@ export class AgentRun {
       todo: this.todo, checkpoints: this.checkpoints, model: this.model?.id,
       pending: [...this.pending.values()].map((p) => ({ id: p.id, kind: p.kind })),
       context: this.session?.getContextUsage?.(),
+      compaction: this.model ? { ...contextSettings(), window: this.model.context ?? 32768, at: compactsAt(this.model.context ?? 32768) } : undefined,
       events: this.events.length, stepBudget: this.stepBudget, self: this.selfCheckout ?? null,
     };
   }
@@ -497,6 +498,7 @@ export class AgentRun {
         guidance.push(await this.revertLastBatch());
       } else {
         next = "continue";
+        this.userMessages.push({ ts: Date.now(), text: human });
         guidance.push(`The user replied: "${human}". Follow it.`);
       }
     }
@@ -554,6 +556,17 @@ export class AgentRun {
         return { ...ctx, command: sandboxedShell(ctx.command, run.cwd, v.kind === "allow" && !!v.network, writable) };
       },
     }));
+
+    // Echo writes the compaction summary: Pi's structured summary plus the plan, the user's messages and the
+    // checkpoints word for word (compaction.ts). If that fails, Pi writes its own.
+    pi.on("session_before_compact", async (event) => {
+      try {
+        return { compaction: await echoCompaction(event, run.piModel, { plan: run.todo, userMessages: run.userMessages, checkpoints: run.checkpoints }) };
+      } catch (e) {
+        if (!event.signal.aborted) run.emit("note", { text: `Echo's compaction summary failed (${(e as Error).message}); Pi writes its own.` });
+        return undefined;
+      }
+    });
 
     pi.on("tool_call", async (event) => {
       const name = event.toolName;
@@ -641,10 +654,11 @@ export class AgentRun {
       const modelRuntime = await ModelRuntime.create({ authPath: path.join(AGENT_DIR, "auth.json"), modelsPath });
       const model = modelRuntime.getModel("echo", m.id);
       if (!model) throw new Error(`Pi could not load model ${m.id}`);
+      this.piModel = model;
       const settingsManager = SettingsManager.inMemory({
         enableInstallTelemetry: false,
         defaultTools: ["read", "edit", "write", "grep", "find", "ls", "bash", "tool_search"],
-        compaction: { enabled: true, ...compactionSettings(m.context ?? 32768) },
+        compaction: compactionSettings(m.context ?? 32768), // echo.yaml agent.auto_compact, compact_at, keep_recent
         retry: { enabled: true, maxRetries: 1 },
       } as any);
       const resourceLoader = new DefaultResourceLoader({
@@ -703,6 +717,7 @@ export class AgentRun {
     if (this.stopped) throw new Error("this run was stopped; start a new run");
     this.instruction = text;
     this.autoContinues = 0;
+    this.userMessages.push({ ts: Date.now(), text });
     if (this.session.isStreaming) await this.session.steer(text);
     else {
       this.setStatus("action");
@@ -725,6 +740,7 @@ export class AgentRun {
         const text = (m.content ?? []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
         const thinking = (m.content ?? []).filter((c: any) => c.type === "thinking").map((c: any) => c.thinking).join("");
         if (text || thinking) this.emit("message", { text, thinking });
+        this.emitContext();
         if (m.stopReason === "error" && m.errorMessage) this.emit("error", { message: m.errorMessage });
         this.hitCapWithoutTool = m.stopReason === "length" && !(m.content ?? []).some((c: any) => c.type === "toolCall");
         break;
@@ -760,9 +776,47 @@ export class AgentRun {
         }
         this.setStatus("idle");
         break;
-      case "compaction_end":
-        this.emit("note", { text: `Context compacted (${e.reason}).` });
+      case "compaction_start": {
+        this.compactionStarted = Date.now();
+        const u = this.session?.getContextUsage?.();
+        this.emit("compaction", { phase: "start", reason: e.reason, tokens: u?.tokens ?? null, window: u?.contextWindow ?? this.model?.context });
         break;
+      }
+      case "compaction_end": {
+        const ms = Date.now() - this.compactionStarted;
+        if (e.result) {
+          this.emit("compaction", { phase: "end", reason: e.reason, before: e.result.tokensBefore, after: e.result.estimatedTokensAfter ?? null, ms, summary: e.result.summary });
+        } else {
+          this.emit("compaction", { phase: "failed", reason: e.reason, ms, error: e.aborted ? "stopped" : e.errorMessage ?? "unknown error" });
+        }
+        break;
+      }
+    }
+  }
+
+  private emitContext() {
+    const u = this.session?.getContextUsage?.();
+    // unknown right after a compaction until the next reply: the meter keeps the compaction's estimate meanwhile
+    if (u?.tokens != null) this.emit("context", { tokens: u.tokens, window: u.contextWindow }, false);
+  }
+
+  /** Compact now, like Claude Code's /compact. Only while the run waits for the user: mid-turn, Pi would abort the
+   *  turn first (a running command included), and it compacts on its own there anyway. */
+  async compactNow(focus?: string) {
+    if (!this.session) throw new Error("run not started");
+    if (this.stopped) throw new Error("this run was stopped");
+    if (this.session.isCompacting) throw new Error("already compacting");
+    // status, not only isStreaming: a message just sent has not started streaming yet
+    if (this.status !== "idle" || this.session.isStreaming || this.pending.size) {
+      throw new Error("the agent is working: compact when it waits for you (it compacts on its own as the context fills)");
+    }
+    try {
+      await this.session.compact(focus?.trim() || undefined);
+    } catch (e) {
+      const m = (e as Error).message;
+      if (/nothing to compact/i.test(m)) throw new Error("Nothing to compact yet: the whole conversation fits in what is kept word for word.");
+      if (/already compacted/i.test(m)) throw new Error("Nothing new to compact since the last compaction.");
+      throw e;
     }
   }
 

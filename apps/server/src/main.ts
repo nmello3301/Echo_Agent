@@ -267,6 +267,16 @@ app.post("/api/agent/runs/:id/message", async (c) => {
     return c.json(err(e), 400);
   }
 });
+/** Compact a waiting run's context now; `focus` says what the summary should keep in particular. */
+app.post("/api/agent/runs/:id/compact", async (c) => {
+  try {
+    const b = await c.req.json<{ focus?: string }>().catch(() => ({ focus: undefined }));
+    await run(c.req.param("id")).compactNow(b.focus);
+    return c.json({ ok: true });
+  } catch (e) {
+    return c.json(err(e), 400);
+  }
+});
 app.post("/api/agent/runs/:id/answer", async (c) => {
   try {
     const b = await c.req.json<{ pendingId: string; approved?: boolean; reply?: string; remember?: boolean }>();

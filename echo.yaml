@@ -24,6 +24,12 @@ agent:
   sandbox: true               # run the agent's bash inside bubblewrap
   network: false              # network inside the sandbox
   checkpoints: true           # git checkpoint before each edit batch
+  # Context management, like Claude Code's auto-compact: once a run's context passes compact_at of the model's
+  # window, its older turns are replaced by a summary. The plan, your messages, the checkpoints and the latest
+  # keep_recent of the window stay word for word; "Compact now" in the Agent tab does it on request. New runs only.
+  auto_compact: true
+  compact_at: 0.7
+  keep_recent: 0.25
 
 thresholds:
   needs_human: 0.5            # P(true) above this pauses the run and asks you

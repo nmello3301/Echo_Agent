@@ -13,6 +13,41 @@ function recentFolders(): string[] {
   }
 }
 
+const kTok = (n: number | null | undefined) => (n == null ? "–" : n < 1024 ? String(n) : `${(n / 1024).toFixed(n < 10240 ? 1 : 0)}K`);
+
+/** How full the run's context is, and where it compacts (echo.yaml agent.compact_at). */
+function ContextMeter({ used, limit, compaction }: { used: number | null; limit: number | null; compaction?: { auto: boolean; at: number; window: number } }) {
+  const max = limit ?? compaction?.window ?? null;
+  const at = compaction?.auto && max ? compaction.at / max : null;
+  const tone = used != null && max && compaction?.auto && used >= compaction.at * 0.9 ? "warn" : "accent";
+  const title = !compaction ? "Context usage"
+    : compaction.auto ? `Context usage. Past ${kTok(compaction.at)} tokens the older turns become a summary (echo.yaml agent.compact_at).`
+    : "Context usage. Automatic compaction is off (echo.yaml agent.auto_compact).";
+  return (
+    <div className="flex items-center gap-1.5" title={title}>
+      <div className="w-40 relative">
+        <Bar value={used ?? 0} max={max ?? 1} tone={tone} />
+        {at != null && <div className="absolute -top-0.5 h-2.5 w-px bg-dim" style={{ left: `${at * 100}%` }} />}
+      </div>
+      <span className="text-[11px] text-dim font-mono">{kTok(used)}/{kTok(max)}</span>
+    </div>
+  );
+}
+
+/** A compaction in the timeline: when it started, and the summary that replaced the older turns. */
+function CompactionNote({ ev }: { ev: any }) {
+  if (ev.phase === "start") {
+    const why = ev.reason === "manual" ? "on request" : ev.reason === "overflow" ? "the context overflowed" : `${kTok(ev.tokens)} of ${kTok(ev.window)} tokens used`;
+    return <div className="text-xs text-dim">Compacting the context ({why}): summarizing the older turns…</div>;
+  }
+  if (ev.phase === "failed") return <div className="text-xs text-bad">Compaction failed: {ev.error}</div>;
+  return (
+    <Collapsible title={`Context compacted: ${kTok(ev.before)} → ${ev.after != null ? kTok(ev.after) : "?"} tokens in ${Math.round(ev.ms / 1000)} s · the summary`}>
+      <div className="text-xs whitespace-pre-wrap font-mono leading-relaxed">{ev.summary}</div>
+    </Collapsible>
+  );
+}
+
 const statusTone = (s: string) =>
   (({ action: "accent", decision: "warn", waiting_human: "bad", waiting_approval: "bad", idle: "good", done: "good", error: "bad" } as Record<string, any>)[s] ?? "dim");
 
@@ -197,21 +232,25 @@ export function Agent() {
   }, []);
   const openRun = async (id: string) => {
     setRunId(id);
+    setError("");
     history.replaceState(null, "", `#agent/${id}`);
     setStreamText("");
     setStreamThinking("");
     const r = await api(`/api/agent/runs/${id}`);
     setSummary(r.summary);
     setEvents(r.events);
+    const compacted = r.events.filter((e: Ev) => e.kind === "compaction" && e.phase === "end").pop();
+    setCtx({ used: r.summary?.context?.tokens ?? compacted?.after ?? null, limit: r.summary?.context?.contextWindow ?? null });
   };
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: "end" });
   }, [events.length, streamText.length > 0]);
 
   useServerEvent((e) => {
-    if (e.type === "metrics" && e.stream) setCtx({ used: e.stream.contextUsed, limit: e.stream.contextLimit });
     if (e.type !== "agent" || e.runId !== runId) return;
     const ev: Ev = e.event;
+    if (ev.kind === "context") return setCtx({ used: ev.tokens, limit: ev.window });
+    if (ev.kind === "compaction" && ev.phase === "end") setCtx((c) => ({ ...c, used: ev.after }));
     if (ev.kind === "text_delta") return setStreamText((t) => t + ev.delta);
     if (ev.kind === "thinking_delta") return setStreamThinking((t) => t + ev.delta);
     if (ev.kind === "message") {
@@ -243,6 +282,16 @@ export function Agent() {
   };
 
   const live = runs.live.some((r) => r.id === runId);
+  const compactNow = async () => {
+    const focus = prompt("Compact the context now: older turns become a summary.\nAnything the summary should keep in particular? (optional)", "");
+    if (focus === null) return;
+    try {
+      setError("");
+      await api(`/api/agent/runs/${runId}/compact`, { method: "POST", json: { focus } });
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
   const send = async () => {
     if (!msg.trim() || !runId) return;
     try {
@@ -317,11 +366,12 @@ export function Agent() {
             <header className="flex flex-wrap items-center gap-2 p-2 border-b border-line">
               <Badge tone={statusTone(summary?.status ?? "")}>{summary?.status ?? "finished"}</Badge>
               <span className="text-sm truncate flex-1 font-mono" title={summary?.cwd}>{summary?.cwd}</span>
-              <div className="w-40" title="Context usage"><Bar value={ctx.used ?? 0} max={ctx.limit ?? 1} /></div>
-              <span className="text-[11px] text-dim font-mono">{ctx.used ?? "–"}/{ctx.limit ?? "–"}</span>
+              <ContextMeter used={ctx.used} limit={ctx.limit} compaction={summary?.compaction} />
+              {live && summary?.status === "idle" && <Button kind="ghost" onClick={compactNow} title="Summarize the older turns now, like Claude Code's /compact">Compact now</Button>}
               {live && <Button onClick={() => showDiff()}>Diff since start</Button>}
               {live && !["stopped", "error"].includes(summary?.status) && <Button kind="danger" onClick={() => api(`/api/agent/runs/${runId}/stop`, { method: "POST" })}>Stop</Button>}
             </header>
+            {error && <div className="px-3 py-1.5 text-xs text-bad border-b border-line flex gap-2"><span className="flex-1">{error}</span><button className="text-dim hover:text-text" onClick={() => setError("")}>dismiss</button></div>}
             <div className="flex-1 flex min-h-0">
               <div className="flex-1 overflow-y-auto">
                 <div className="max-w-3xl mx-auto p-4 space-y-3">
@@ -348,6 +398,7 @@ export function Agent() {
                       );
                       case "revert": return <div key={i} className="text-xs text-warn">Reverted to {ev.sha.slice(0, 8)}{ev.removed?.length ? `; removed ${ev.removed.join(", ")}` : ""}</div>;
                       case "note": return <div key={i} className="text-xs text-dim">{ev.text}</div>;
+                      case "compaction": return <CompactionNote key={i} ev={ev} />;
                       case "error": return <div key={i} className="text-sm text-bad border border-bad/40 rounded p-2">{ev.message}</div>;
                       default: return null;
                     }

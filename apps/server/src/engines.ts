@@ -165,13 +165,17 @@ export class Engine {
   }
 }
 
-function llamaArgs(m: { model?: string; mmproj?: string; draft?: string; context?: number; gpu_layers?: number; threads?: number; port?: number; kv_cache?: string; mmproj_on_cpu?: boolean }, extra: string[]) {
+function llamaArgs(m: { model?: string; mmproj?: string; draft?: string; context?: number; gpu_layers?: number; threads?: number; port?: number; kv_cache?: string; kv_cache_v?: string; mmproj_on_cpu?: boolean }, extra: string[]) {
   const a = ["-m", abs(m.model!), "--host", "127.0.0.1", "--port", String(m.port), "-c", String(m.context ?? 8192), "-np", "1"];
   if (m.gpu_layers !== undefined) a.push("-ngl", String(m.gpu_layers));
   if (m.threads) a.push("-t", String(m.threads));
-  if (m.kv_cache) a.push("-ctk", m.kv_cache, "-ctv", m.kv_cache);
+  if (m.kv_cache) a.push("-ctk", m.kv_cache, "-ctv", m.kv_cache_v ?? m.kv_cache);
   if (m.mmproj && existsSync(abs(m.mmproj))) a.push("--mmproj", abs(m.mmproj), ...(m.mmproj_on_cpu ? ["--no-mmproj-offload"] : []));
-  if (m.draft && existsSync(abs(m.draft))) a.push("--model-draft", abs(m.draft), "--spec-type", "draft-mtp");
+  if (m.draft && existsSync(abs(m.draft))) {
+    a.push("--model-draft", abs(m.draft), "--spec-type", "draft-mtp");
+    // the draft keeps its own KV cache over the whole context, f16 unless told: 0.5 GiB at 128K for the 27B's MTP head
+    if (m.kv_cache) a.push("-ctkd", m.kv_cache, "-ctvd", m.kv_cache);
+  }
   return [...a, ...extra];
 }
 

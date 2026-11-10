@@ -201,8 +201,9 @@ The model files are already in `models/strata/models/IQ2_XS/`. Setup writes `run
 
 - `echo.yaml`: ports, paths, agent step budget, sandbox, thresholds, notifications.
 - `models.yaml`: model endpoints. Entries with `coming_soon: true` show in the selectors, disabled. For llama-server
-  models, `kv_cache: q8_0` halves the KV cache and `mmproj_on_cpu: true` keeps the vision projector in RAM; both
-  leave VRAM free for the desktop (on a full card Windows moves part of the model to system RAM and long prompts crawl).
+  models, `kv_cache: q8_0` halves the KV cache (the MTP draft's too) and `mmproj_on_cpu: true` keeps the vision
+  projector in RAM; both leave VRAM free for the desktop (on a full card Windows moves part of the model to system
+  RAM and long prompts crawl). `kv_cache_v: q4_0` makes only V coarser, which costs less quality than a coarser K.
 
 Both reload when saved.
 
@@ -275,6 +276,19 @@ need your approval as well, and approved ones run outside the sandbox.
 
 Every edit batch gets a git checkpoint, stored under `refs/echo/` with a private index, so your branches
 and staging area are untouched. Every decision is logged to `evals/decisions.jsonl` and SQLite.
+
+### Context: long runs compact on their own
+
+A local model's context fills up fast on a long run, so Echo compacts it, like Claude Code's auto-compact. Once a
+run's context passes 70% of the model's window, the older turns are replaced by a summary. The model writes it with
+thinking off: goal, progress, decisions, next steps, exact paths, commands and errors. Echo then adds, word for word,
+what a summary would only paraphrase: the plan, everything you said during the run and the git checkpoints. The task
+stays in the system prompt, and the latest quarter of the window stays as it was. The run then carries on by itself.
+
+The bar in the run's header shows how full the context is, with a tick where it compacts. The timeline shows each
+compaction with its summary (click it to read it). **Compact now** does it on request while the run waits for you,
+and asks what the summary should keep in particular. echo.yaml `agent.auto_compact`, `compact_at` and
+`keep_recent` change this for new runs.
 
 ## Layout
 

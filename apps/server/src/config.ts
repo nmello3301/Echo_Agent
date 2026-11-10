@@ -20,8 +20,10 @@ export interface MainModel {
   context?: number;
   gpu_layers?: number;
   threads?: number;
-  /** llama-server KV cache type for K and V (f16 by default; q8_0 halves it) */
+  /** llama-server KV cache type for K and V (f16 by default; q8_0 halves it), the MTP draft's included */
   kv_cache?: string;
+  /** A different type for V only (e.g. q4_0): V tolerates a coarser cache than K */
+  kv_cache_v?: string;
   /** Keep the vision projector in RAM instead of VRAM */
   mmproj_on_cpu?: boolean;
   supports_tools?: boolean;
@@ -54,6 +56,11 @@ export interface EchoConfig {
     sandbox: boolean;
     network: boolean;
     checkpoints: boolean;
+    /** Context management (compaction.ts): summarize older turns once compact_at of the window is used (default
+     *  true, 0.7), keeping keep_recent of the window word for word (0.25) */
+    auto_compact?: boolean;
+    compact_at?: number;
+    keep_recent?: number;
   };
   thresholds: { needs_human: number; action_safe: number; stalled_replans: number };
   notify: { desktop: boolean; ntfy_url: string };
