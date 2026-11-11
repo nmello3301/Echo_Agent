@@ -236,12 +236,19 @@ and back and it carries on; **New conversation** starts its over (with its greet
 (short spoken sentences, no lists, emoji or links) after a persona's instructions, so its answers can always be read
 aloud. Personas are kept in Echo's database (`data/echo.db`).
 
-**Live's model.** Live answers with a smaller main model than the rest of Echo, **MiMo-V2.6 Distill 9B** (`live.model`
-in `echo.yaml`; the tab says "answers with ..."). The 27B fills the GPU, so no GPU voice fits beside it; the 9B leaves
-~8 GB, room for Qwen3-TTS Fast (~3.5x real time with cloned voices). Only one main model fits at a time: **Start**
-loads the 9B in place of the 27B, and Chat or an agent run loads the 27B again when it is the model picked there
-(~2-3 min). Until the 9B is downloaded (Models tab, 10 GB) Live uses whichever main model is loaded. It is a weaker
-model than the 27B: with thinking off it got 17 x 23 wrong and sometimes answered with lists.
+**Live's model.** Live answers with a smaller main model than the rest of Echo by default, **MiMo-V2.6 Distill 9B**
+(`live.model` in `echo.yaml`). The 27B fills the GPU, so no GPU voice fits beside it; the 9B leaves ~8 GB, room for
+Qwen3-TTS Fast (~3.5x real time with cloned voices). Only one main model fits at a time: **Start** loads Live's model
+in place of the 27B, and Chat or an agent run loads the 27B again when it is the model picked there (~2-3 min). Until
+the 9B is downloaded (Models tab, 10 GB) Live uses whichever main model is loaded. It is a weaker model than the 27B:
+with thinking off it got 17 x 23 wrong and sometimes answered with lists.
+
+**Picking another model.** *Answers with* in the tab picks any downloaded main model from `models.yaml` (a model
+added there shows up in the list). Echo's own choice is kept in the browser; while a persona is chosen, the picker
+sets that persona's model, saved with it (a new persona follows Echo's choice until you pick one for it). Picking a
+model while Live is running loads it at once, and the status line says so while it loads. Each answer is labelled with
+the model that gave it. The chat model the voice hands questions to is the same model, thinking harder: only one fits
+on the GPU. A large model leaves no room for a GPU voice such as Qwen3-TTS Fast.
 
 ## Git tab
 

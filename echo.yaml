@@ -54,8 +54,9 @@ live:
   stt_threads: 8              # 16 was slower than 8 (the threads compete)
   effort: "off"               # answers' thinking level; off starts speaking soonest (docs/benchmarks.md)
   voice: piper:en_US-lessac-medium
-  # The main model Live answers with (models.yaml id). The 27B fills the GPU and leaves no room for a GPU voice such as
-  # Qwen3-TTS Fast; this 9B leaves ~8 GB. Starting Live swaps it in; Chat and the agent swap the 27B back when they run.
+  # The main model Live answers with by default (models.yaml id); the tab's "answers with" picker overrides it, per
+  # browser and per persona. The 27B fills the GPU and leaves no room for a GPU voice such as Qwen3-TTS Fast; this 9B
+  # leaves ~8 GB. Starting Live swaps it in; Chat and the agent swap the 27B back when they run.
   # Until it is downloaded, Live uses whichever main model is loaded.
   model: mimo-v2.6-9b
 

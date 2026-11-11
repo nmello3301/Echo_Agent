@@ -12,7 +12,7 @@ browser: mic ─► AudioWorklet ─► end-of-speech detection ─┬─ speech
                                                          │                                            cache the history)
                                                          ├─ 200 ms silence ─► POST /api/live/stt     (transcribe early)
                                                          └─ 500 ms silence ─► POST /api/live/turn    ({text}, or the WAV)
-server (live.ts):  text ─► Live's model (echo.yaml live.model, a 9B swapped in for the 27B), streamed (spoken-style
+server (live.ts):  text ─► Live's model (the tab's pick, else echo.yaml live.model, a 9B swapped in for the 27B), streamed (spoken-style
                         system prompt + session history)
                         ─► Chunker: first chunk may end at a clause break, then sentence ends
                         ─► Piper per chunk ─► SSE `audio` events, in order, as each is ready
@@ -44,9 +44,9 @@ browser: decode ─► schedule gapless ─► play; listen again 300 ms after t
 
 | Endpoint | |
 | --- | --- |
-| `POST /turn?session&effort&voice&persona` | body: WAV, or JSON `{text}`. SSE: `stt {text, ms}`, `delta {text}`, `audio {seq, text, wav}` (base64), `tool {name, model, ms?, ...}`, `done {text, timings}`, `error {message}` |
+| `POST /turn?session&effort&voice&persona&model` | body: WAV, or JSON `{text}`. SSE: `stt {text, ms}`, `delta {text}`, `audio {seq, text, wav}` (base64), `tool {name, model, ms?, ...}`, `done {text, model, timings}`, `error {message}` |
 | `POST /stt` | body: WAV → `{text, ms, audio_s}` |
-| `POST /prime?session&persona` · `POST /warm?voice&persona` | wake the model (and load the voice) |
+| `POST /prime?session&persona&model` · `POST /warm?voice&persona&model` | wake the model, loading it if another is in (and load the voice) |
 | `POST /greet?session&persona` | the persona's greeting when its conversation is new: `{text, wav}` (base64), else `{text: ""}`; it joins the conversation |
 | `POST /reset?session` · `GET /config` | forget a conversation · the tab's defaults (echo.yaml `live`) |
 | `GET/POST /personas` · `PUT/DELETE /personas/:id` | personas (personas.ts, SQLite table `live_personas`) |
@@ -59,8 +59,14 @@ prompt is "You are <name>, talking with the user by voice...", then its instruct
 under "How to talk:" (the length rule follows its reply length; the helper rule and the tools follow what it may use).
 Echo's own prompt, without a persona, is unchanged. Reply length sets `max_tokens` (400, 700 or 1,400, plus 1,100 when
 thinking); speech speed is the TTS service's `tempo`, a pitch-keeping stretch with sox (~10 ms a sentence). The tab
-keeps one session per persona, so switching back resumes a conversation; with the persona chosen, the thinking switch
-and Change voice save to it.
+keeps one session per persona, so switching back resumes a conversation; with the persona chosen, the thinking switch,
+Change voice and the model picker save to it.
+
+`model` (a `models.yaml` main model id) picks the model: the request's, else the persona's (`model`, null to follow
+Echo's), else `live.model`, each only if it is downloaded, else whichever main model is loaded (`liveModelId`). The tab
+sends Echo's pick from the browser's `localStorage` (`echo.live.model`) or the persona's. Only one main model fits, so a
+pick that is not loaded is swapped in by the request; the tab calls `/warm` when the pick or the persona changes while
+Live runs, and shows "loading ..." if that takes over 1.5 s.
 
 `timings` (ms from the moment the request arrived): `stt`, `firstToken`, `tts` (first chunk), `firstAudio`,
 `llm`, `total`, and `tool` when another model was asked.

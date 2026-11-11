@@ -24,6 +24,8 @@ export interface Persona {
   greeting: string;
   /** Which other models it may hand questions to */
   helpers: { chat: boolean; decide: boolean };
+  /** The main model it answers with (models.yaml id); null: the one picked for Echo in the Live tab */
+  model: string | null;
 }
 
 db.exec(`CREATE TABLE IF NOT EXISTS live_personas (id TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at INTEGER NOT NULL);`);
@@ -49,6 +51,7 @@ export function cleanPersona(input: Partial<Persona>, id: string): Persona {
     speed: Math.round(clamp(input.speed, 0.8, 1.3, 1) * 100) / 100,
     greeting: String(input.greeting ?? "").replace(/\s+/g, " ").trim().slice(0, 300),
     helpers: { chat: input.helpers?.chat !== false, decide: input.helpers?.decide !== false },
+    model: typeof input.model === "string" && input.model.trim() ? input.model.trim().slice(0, 100) : null,
   };
 }
 

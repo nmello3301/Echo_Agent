@@ -137,7 +137,7 @@ function saveChat(question: string, res: StreamResult, modelId: string): string 
   return id;
 }
 
-async function runTool(call: ToolCall, lastQuestion: string, signal: AbortSignal): Promise<ToolUse> {
+async function runTool(call: ToolCall, lastQuestion: string, signal: AbortSignal, pick?: string): Promise<ToolUse> {
   const t = performance.now();
   let args: Record<string, unknown> = {};
   try {
@@ -152,7 +152,8 @@ async function runTool(call: ToolCall, lastQuestion: string, signal: AbortSignal
       result: `The decide model's answer to "${question}": ${said}. Tell the user in one or two short spoken sentences, then say you checked the decide model.`,
     };
   }
-  const m = await mainModel();
+  // the same model as the voice (only one fits on the GPU), thinking this time
+  const m = await mainModel(pick);
   const req = { messages: [{ role: "user", content: question }], ...effortFields(m, CHAT_EFFORT), cache_prompt: true };
   const res: StreamResult = args.web
     ? await chatWithWeb(m, req, async () => {}, async () => {}, signal, 1)
@@ -239,17 +240,21 @@ async function synth(text: string, voice: string | undefined, signal: AbortSigna
   return new Uint8Array(await r.arrayBuffer());
 }
 
-/** The model Live answers with: echo.yaml `live.model` once it is downloaded (a 9B leaves the GPU room for a fast
- *  voice; the 27B fills it), else whichever main model is loaded. Only one main model fits, so this swaps it in. */
-export function liveModelId(): string {
-  const want = config.echo.live?.model;
-  const m = config.models.main.find((x) => x.id === want);
-  if (want && m && (m.engine === "strata" ? existsSync(abs(m.command ?? "-")) : existsSync(abs(m.model ?? "-")))) return want;
+const downloaded = (m: MainModel | undefined) =>
+  !!m && !m.coming_soon && (m.engine === "strata" ? existsSync(abs(m.command ?? "-")) : existsSync(abs(m.model ?? "-")));
+
+/** The model Live answers with: the one picked in the Live tab (a persona's own, or Echo's), else echo.yaml
+ *  `live.model` (a 9B leaves the GPU room for a fast voice; the 27B fills it), each only once it is downloaded, else
+ *  whichever main model is loaded. Only one main model fits, so answering swaps it in. */
+export function liveModelId(pick?: string): string {
+  for (const id of [pick, config.echo.live?.model]) {
+    if (id && downloaded(config.models.main.find((x) => x.id === id))) return id;
+  }
   return activeMainId ?? config.echo.default_model;
 }
 
-async function mainModel(): Promise<MainModel> {
-  const id = liveModelId();
+async function mainModel(pick?: string): Promise<MainModel> {
+  const id = liveModelId(pick);
   if (activeMainId !== id || activeMain()?.engine.status !== "ready") await useMainModel(id);
   return activeMain()!.model;
 }
@@ -279,12 +284,13 @@ const err = (e: unknown) => ({ error: (e as Error).message ?? String(e) });
 liveApp.get("/config", (c) => {
   const live = config.echo.live ?? {};
   const model = config.models.main.find((m) => m.id === liveModelId());
-  return c.json({ effort: live.effort ?? "off", voice: live.voice ?? "piper:en_US-lessac-medium", sttModel: live.stt_model ?? "base.en", model: model?.name });
+  return c.json({ effort: live.effort ?? "off", voice: live.voice ?? "piper:en_US-lessac-medium", sttModel: live.stt_model ?? "base.en", model: model?.name, modelId: model?.id });
 });
 
-/** One voice turn. Body: the utterance as a WAV. Query: session (keeps the conversation), effort, voice.
+/** One voice turn. Body: the utterance as a WAV. Query: session (keeps the conversation), effort, voice, persona,
+ *  model (a models.yaml main model; default: the persona's, then echo.yaml live.model).
  *  Answers with server-sent events: stt {text, ms} · delta {text} · audio {seq, text, wav (base64)} ·
- *  done {text, timings} · error {message}. Timings are milliseconds from the moment the audio had arrived. */
+ *  done {text, model, timings} · error {message}. Timings are milliseconds from the moment the audio had arrived. */
 liveApp.post("/turn", async (c) => {
   // The browser may have transcribed the utterance already, during its end-of-speech wait: then it sends the text
   const json = (c.req.header("content-type") ?? "").includes("application/json");
@@ -295,6 +301,7 @@ liveApp.post("/turn", async (c) => {
   const effort = (c.req.query("effort") || config.echo.live?.effort || "off") as Effort;
   const voice = c.req.query("voice") || config.echo.live?.voice;
   const persona = getPersona(c.req.query("persona"));
+  const pick = c.req.query("model") || persona?.model || undefined;
   return streamSSE(c, async (stream) => {
     const ac = new AbortController();
     stream.onAbort(() => ac.abort());
@@ -309,7 +316,7 @@ liveApp.post("/turn", async (c) => {
       Object.assign(timings, { stt: heard.ms, sttDone: at(), speechS: heard.audio_s });
       await send("stt", { text: heard.text, ms: heard.ms, early: !!given });
       if (!heard.text) return void (await send("done", { text: "", sessionId, timings }));
-      const m = await mainModel();
+      const m = await mainModel(pick);
       const s = session(sessionId);
       s.messages.push({ role: "user", content: heard.text });
       // Each chunk goes to TTS as soon as it is complete; chunks are spoken in order, one after another
@@ -349,7 +356,7 @@ liveApp.post("/turn", async (c) => {
         if (said) speak(said);
         if (seq === 0) speak(call.function.name === "decide" ? "Let me weigh that up." : "Let me think about that.");
         await send("tool", { name: call.function.name, model: call.function.name === "decide" ? "decide" : "chat" });
-        const used = await runTool(call, heard.text, ac.signal);
+        const used = await runTool(call, heard.text, ac.signal, m.id);
         timings.tool = used.ms;
         await send("tool", { name: call.function.name, model: used.model, ms: used.ms, ...used.detail });
         chunker = new Chunker();
@@ -377,7 +384,7 @@ liveApp.post("/turn", async (c) => {
       if (res.aborted) s.messages.pop(); // the user stopped it: forget the question too
       else s.messages.push({ role: "assistant", content: text });
       s.messages.splice(0, Math.max(0, s.messages.length - MAX_MESSAGES));
-      await send("done", { text, sessionId, effort, timings, tokens: res.timings?.predicted_n, thinkingChars: res.reasoning.length });
+      await send("done", { text, sessionId, effort, model: m.name, timings, tokens: res.timings?.predicted_n, thinkingChars: res.reasoning.length });
     } catch (e) {
       if (!ac.signal.aborted) await send("error", { message: (e as Error).message, timings });
     }
@@ -387,11 +394,11 @@ liveApp.post("/turn", async (c) => {
 /** Get the GPU up to speed and the system prompt into the model's cache, so the first turn is as quick as the rest. */
 liveApp.post("/warm", async (c) => {
   try {
-    const m = await mainModel();
+    const persona = getPersona(c.req.query("persona"));
+    const m = await mainModel(c.req.query("model") || persona?.model || undefined);
     await startStt();
     const t = performance.now();
     const voice = c.req.query("voice") || config.echo.live?.voice;
-    const persona = getPersona(c.req.query("persona"));
     await Promise.all([
       streamChat(m, { messages: [{ role: "system", content: systemPrompt(persona) }, { role: "user", content: "Hello." }], ...liveTools(persona), ...effortFields(m, "off"), max_tokens: 1, cache_prompt: true }, () => {}, new AbortController().signal, "live"),
       synth("Ready.", voice, AbortSignal.timeout(60_000)), // loads the voice (a cold first sentence took ~0.9 s)
@@ -407,9 +414,9 @@ liveApp.post("/warm", async (c) => {
  *  only their new words are left to read: the first word comes sooner. */
 liveApp.post("/prime", async (c) => {
   try {
-    const m = await mainModel();
-    const s = sessions.get(c.req.query("session") ?? "");
     const persona = getPersona(c.req.query("persona"));
+    const m = await mainModel(c.req.query("model") || persona?.model || undefined);
+    const s = sessions.get(c.req.query("session") ?? "");
     const t = performance.now();
     await streamChat(m, {
       messages: [{ role: "system", content: systemPrompt(persona) }, ...(s?.messages ?? []), { role: "user", content: "…" }], ...liveTools(persona),

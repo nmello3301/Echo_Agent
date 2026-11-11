@@ -15,6 +15,8 @@ export interface Persona {
   speed: number;
   greeting: string;
   helpers: { chat: boolean; decide: boolean };
+  /** The main model it answers with; null: the one picked for Echo */
+  model: string | null;
 }
 
 export function usePersonas() {
@@ -44,13 +46,14 @@ const LENGTHS = [
 const SPEEDS = ["0.8", "0.9", "1", "1.1", "1.2", "1.3"].map((v) => ({ value: v, label: `Speech ${v}x` }));
 
 /** The persona picker, and the editor for the one being made or changed. `selected` undefined: Echo's own. */
-export function PersonaBar({ personas, selected, onSelect, newDefaults, voiceName, disabled }: {
+export function PersonaBar({ personas, selected, onSelect, newDefaults, voiceName, modelName, disabled }: {
   personas: ReturnType<typeof usePersonas>;
   selected?: Persona;
   onSelect: (id: string) => void;
   /** What a new persona starts with: the voice and thinking in use now */
   newDefaults: () => Pick<Persona, "voice" | "effort">;
   voiceName?: string;
+  modelName?: (id: string) => string;
   disabled?: boolean;
 }) {
   const [draft, setDraft] = useState<Partial<Persona>>();
@@ -162,7 +165,8 @@ export function PersonaBar({ personas, selected, onSelect, newDefaults, voiceNam
             </label>
           </div>
           <p className="text-xs text-dim" style={{ marginLeft: "6.5rem" }}>
-            Voice: {draft.id && selected?.id === draft.id ? voiceName ?? draft.voice : "the one picked now"}. With the persona chosen, Change voice below sets its voice.
+            Voice: {draft.id && selected?.id === draft.id ? voiceName ?? draft.voice : "the one picked now"}. Model: {draft.model ? modelName?.(draft.model) ?? draft.model : "the one picked for Echo"}.
+            With the persona chosen, Change voice below sets its voice, and the model picker above sets its model.
           </p>
           {error && <div className="text-bad">{error}</div>}
           <div className="flex gap-2" style={{ marginLeft: "6.5rem" }}>

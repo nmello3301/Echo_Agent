@@ -1,8 +1,8 @@
 /** Live: hands-free voice chat with the main model. Listens on the microphone, detects the end of speech, sends the
  *  utterance to /api/live/turn and plays the spoken answer as it streams back; then listens again. */
 import { useEffect, useRef, useState } from "react";
-import { api, readSSE } from "../api.ts";
-import { Badge, Button, Select } from "./ui.tsx";
+import { api, readSSE, useModels } from "../api.ts";
+import { Badge, Button, ModelSelect, Select } from "./ui.tsx";
 import { type Persona, PersonaBar, usePersonas } from "./LivePersonas.tsx";
 import { ChangeVoice, stopVoiceTest, useVoices } from "./Voices.tsx";
 
@@ -21,6 +21,8 @@ interface Turn {
   early?: boolean;
   /** The voice model handed the question to the chat model or the decide model */
   tool?: { model: "chat" | "decide"; ms?: number; answer?: string; web?: boolean };
+  /** The main model that answered */
+  model?: string;
   error?: string;
 }
 
@@ -81,6 +83,8 @@ interface Settings {
   session: string;
   effort: string;
   voice: string;
+  /** The main model it answers with (models.yaml id) */
+  model: string;
   silenceMs: number;
 }
 
@@ -125,9 +129,7 @@ class LiveEngine {
     this.ctx.createMediaStreamSource(this.stream).connect(this.node);
     this.noise = 0;
     this.listen();
-    const s = this.settings();
-    void api(`/api/live/warm?voice=${encodeURIComponent(s.voice)}&persona=${s.persona}`, { method: "POST" }).catch(() => {});
-    void this.greet();
+    void this.greet(); // the tab warms the model up (Live's warm())
   }
 
   /** A persona's greeting, when it has one and this is the start of its conversation (the server checks both). */
@@ -209,7 +211,8 @@ class LiveEngine {
         this.startAt = this.lastVoiceAt = now;
         this.set("hearing");
         // while they talk, wake the model and cache the conversation so far (see /api/live/prime)
-        void fetch(`/api/live/prime?session=${this.settings().session}&persona=${this.settings().persona}`, { method: "POST" }).catch(() => {});
+        const s = this.settings();
+        void fetch(`/api/live/prime?session=${s.session}&persona=${s.persona}&model=${encodeURIComponent(s.model)}`, { method: "POST" }).catch(() => {});
       }
       return;
     }
@@ -251,7 +254,7 @@ class LiveEngine {
     };
     try {
       const pre = early && (await early.text);
-      const q = `session=${s.session}&effort=${s.effort}&voice=${encodeURIComponent(s.voice)}&persona=${s.persona}`;
+      const q = `session=${s.session}&effort=${s.effort}&voice=${encodeURIComponent(s.voice)}&persona=${s.persona}&model=${encodeURIComponent(s.model)}`;
       const r = await fetch(`/api/live/turn?${q}`, pre
         ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: pre.text }), signal: this.abort.signal }
         : { method: "POST", body: wav as Uint8Array<ArrayBuffer>, signal: this.abort.signal });
@@ -287,6 +290,7 @@ class LiveEngine {
           });
         } else if (event === "done") {
           t.timings = { ...data.timings, ...(pre ? { stt: pre.ms } : {}) };
+          t.model = data.model;
           done = true;
         } else if (event === "error") {
           t.error = data.message;
@@ -334,7 +338,15 @@ export function Live({ active }: { active: boolean }) {
   const [turnsBy, setTurnsBy] = useState<Record<string, Turn[]>>({});
   const [echoEffort, setEchoEffort] = useState("off");
   const [defaultVoice, setDefaultVoice] = useState<string>(); // echo.yaml live.voice
-  const [model, setModel] = useState<string>(); // echo.yaml live.model, or the loaded main model
+  const [defaultModel, setDefaultModel] = useState<string>(); // echo.yaml live.model, or the loaded main model
+  const [echoModel, setEchoModel] = useState(() => {
+    try {
+      return localStorage.getItem("echo.live.model") ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const models = useModels();
   const echoVoices = useVoices("echo.live.voice", defaultVoice);
   const personas = usePersonas();
   const [personaId, setPersonaId] = useState(() => {
@@ -354,6 +366,13 @@ export function Live({ active }: { active: boolean }) {
   const voice = persona?.voice ?? echoVoices.voice?.id ?? defaultVoice ?? "piper:en_US-lessac-medium";
   const effort = persona?.effort ?? echoEffort;
   const setEffort = (e: string) => (persona ? savePersona({ effort: e === "low" ? "low" : "off" }) : setEchoEffort(e));
+  // The model: the persona's, else the one picked for Echo in this browser, else echo.yaml's (a pick that is no longer
+  // downloaded falls back too)
+  const usable = (id?: string | null) => !!id && !!models?.main.some((m) => m.id === id && m.available && !m.comingSoon);
+  const model = [persona?.model, echoModel].find(usable) ?? defaultModel ?? "";
+  const modelName = (id: string) => models?.main.find((m) => m.id === id)?.name ?? id;
+  const [loading, setLoading] = useState<string>(); // what warm() is waiting for, once it takes a while
+  const warming = useRef(0);
   const [silenceMs, setSilenceMs] = useState(500);
   // one conversation per persona, so switching back resumes it
   const sessionsBy = useRef(new Map<string, string>());
@@ -362,15 +381,15 @@ export function Live({ active }: { active: boolean }) {
   const turns = turnsBy[key] ?? [];
   const [level, setLevel] = useState(0);
   const [error, setError] = useState("");
-  const settings = useRef<Settings>({ persona: persona?.id ?? "", key, session, effort, voice, silenceMs });
-  settings.current = { persona: persona?.id ?? "", key, session, effort, voice, silenceMs };
+  const settings = useRef<Settings>({ persona: persona?.id ?? "", key, session, effort, voice, model, silenceMs });
+  settings.current = { persona: persona?.id ?? "", key, session, effort, voice, model, silenceMs };
   const engine = useRef<LiveEngine>(undefined);
 
   useEffect(() => {
-    api<{ effort: string; voice: string; model?: string }>("/api/live/config").then((c) => {
+    api<{ effort: string; voice: string; modelId?: string }>("/api/live/config").then((c) => {
       setEchoEffort(c.effort);
       setDefaultVoice(c.voice);
-      setModel(c.model);
+      setDefaultModel(c.modelId);
     }).catch(() => {});
   }, []);
   useEffect(() => {
@@ -400,7 +419,33 @@ export function Live({ active }: { active: boolean }) {
     } catch (err) {
       setError(`Microphone: ${(err as Error).message}`);
       e.stop();
+      return;
     }
+    warm();
+  }
+  /** Load the model if another one is in, and put the system prompt in its cache and the voice in memory. Only one
+   *  main model fits on the GPU, so a switch takes a minute or two: the status line says so. */
+  function warm(id = settings.current.model) {
+    const s = settings.current;
+    const n = ++warming.current;
+    const text = models?.active !== id ? `loading ${modelName(id)} in place of the current model (a minute or two)…` : "getting ready…";
+    const slow = setTimeout(() => warming.current === n && setLoading(text), 1500);
+    api(`/api/live/warm?voice=${encodeURIComponent(s.voice)}&persona=${s.persona}&model=${encodeURIComponent(id)}`, { method: "POST" })
+      .catch((e) => warming.current === n && setError(`Getting ready: ${(e as Error).message}`))
+      .finally(() => {
+        clearTimeout(slow);
+        if (warming.current === n) setLoading(undefined);
+      });
+  }
+  function pickModel(id: string) {
+    if (persona) savePersona({ model: id });
+    else {
+      setEchoModel(id);
+      try {
+        localStorage.setItem("echo.live.model", id);
+      } catch {}
+    }
+    if (engine.current && phase !== "off") warm(id);
   }
   function newSession() {
     void api(`/api/live/reset?session=${session}`, { method: "POST" }).catch(() => {});
@@ -413,8 +458,14 @@ export function Live({ active }: { active: boolean }) {
     try {
       localStorage.setItem("echo.live.persona", id);
     } catch {}
-    // talking already: the persona greets you when its conversation is new (after the settings have switched)
-    if (engine.current && phase !== "off") setTimeout(() => void engine.current?.greet(), 0);
+    // talking already: the persona greets you when its conversation is new, and its model loads if it has its own
+    // (after the settings have switched)
+    if (engine.current && phase !== "off") {
+      setTimeout(() => {
+        void engine.current?.greet();
+        warm();
+      }, 0);
+    }
   }
 
   const delays = turns.map((t) => t.delayMs).filter((d): d is number => d !== undefined);
@@ -432,17 +483,25 @@ export function Live({ active }: { active: boolean }) {
         <Select value={String(silenceMs)} onChange={(v) => setSilenceMs(Number(v))} options={[
           { value: "400", label: "Reply after 0.4 s pause" }, { value: "500", label: "Reply after 0.5 s pause" }, { value: "700", label: "Reply after 0.7 s pause" },
         ]} />
+        {models && model && (
+          <span className="flex items-center gap-1.5 text-xs text-dim"
+            title={"The main model that answers" + (persona ? ` as ${persona.name} (saved with the persona)` : "") + ". Only one fits on the GPU, so the first " +
+              "answer loads it in place of the current one (a minute or two). A large model can leave no room for a GPU voice such as Qwen3-TTS Fast."}>
+            answers with
+            <ModelSelect models={models.main} value={model} onChange={pickModel} />
+          </span>
+        )}
         <div className="flex-1" />
         <Button kind="ghost" onClick={newSession}>New conversation</Button>
       </div>
-      <PersonaBar personas={personas} selected={persona} onSelect={choose} voiceName={voices.voice?.name}
+      <PersonaBar personas={personas} selected={persona} onSelect={choose} voiceName={voices.voice?.name} modelName={modelName}
         newDefaults={() => ({ voice, effort: effort === "low" ? "low" : "off" })} />
       <ChangeVoice voices={voices} speed={persona?.speed ?? 1} live onTest={() => engine.current?.interrupt()} />
       <div className="flex items-center gap-3 text-sm">
         <span className={phase === "hearing" ? "text-good" : phase === "off" ? "text-dim" : "text-accent"}>{PHASE_TEXT[phase]}</span>
         {phase !== "off" && <div className="w-32 h-1.5 bg-line rounded-full overflow-hidden"><div className="h-full bg-good" style={{ width: `${Math.min(100, level * 600)}%` }} /></div>}
         <div className="flex-1" />
-        {model && <span className="text-xs text-dim" title="echo.yaml live.model: starting Live loads it in place of the main model">answers with {model}</span>}
+        {loading && <span className="text-xs text-warn">{loading}</span>}
         {delays.length > 0 && <span className="text-xs text-dim">median delay {(delays.sort((a, b) => a - b)[Math.floor(delays.length / 2)] / 1000).toFixed(2)} s over {delays.length}</span>}
       </div>
       {error && <div className="text-sm text-bad border border-bad/40 rounded p-2">{error}</div>}
@@ -461,6 +520,7 @@ export function Live({ active }: { active: boolean }) {
                 {t.timings?.firstToken !== undefined && <Badge>first word {t.timings.firstToken} ms</Badge>}
                 {t.timings?.tts !== undefined && <Badge>voice {t.timings.tts} ms</Badge>}
                 {t.tool && <ToolBadge tool={t.tool} />}
+                {t.model && <Badge>{t.model}</Badge>}
               </div>
             )}
           </div>

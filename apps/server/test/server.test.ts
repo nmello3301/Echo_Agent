@@ -365,16 +365,22 @@ describe("live chat", () => {
     assert.equal(describeDecision({ type: "choice", probabilities: { A: 0.2, B: 0.8 } }, ["tea", "coffee"]), "coffee: 80 percent, tea: 20 percent");
   });
 
-  test("Live answers with live.model once it is downloaded, else with the main model", async () => {
+  test("Live answers with the model picked in the tab, else live.model, once downloaded, else with the main model", async () => {
     const { liveModelId } = await import("../src/live.ts");
     const saved = { live: config.echo.live, main: config.models.main };
     const file = path.join(tmp, "small.gguf");
+    const big = path.join(tmp, "big.gguf");
     try {
-      config.models.main = [{ ...llama, id: "big", model: path.join(tmp, "big.gguf") }, { ...llama, id: "small", model: file }];
+      config.models.main = [{ ...llama, id: "big", model: big }, { ...llama, id: "small", model: file }, { id: "soon", name: "Soon", coming_soon: true }];
       config.echo.live = { ...saved.live, model: "small" };
       assert.equal(liveModelId(), config.echo.default_model, "not downloaded: whatever main model Echo runs");
       writeFileSync(file, "x");
       assert.equal(liveModelId(), "small");
+      assert.equal(liveModelId("big"), "small", "a pick that isn't downloaded falls back to live.model");
+      writeFileSync(big, "x");
+      assert.equal(liveModelId("big"), "big", "the tab's (or the persona's) pick comes first");
+      assert.equal(liveModelId("soon"), "small", "a placeholder is never picked");
+      assert.equal(liveModelId("nope"), "small");
       config.echo.live = { ...saved.live, model: "missing" };
       assert.equal(liveModelId(), config.echo.default_model, "an id models.yaml doesn't have");
     } finally {
@@ -403,7 +409,9 @@ describe("live chat", () => {
     const { cleanPersona, personasApp } = await import("../src/personas.ts");
     assert.throws(() => cleanPersona({ name: "   " }, "x"), /name/);
     const p = cleanPersona({ name: "Gamma", speed: 3, temperature: -1, effort: "high" as never, length: "huge" as never }, "g");
-    assert.deepEqual([p.speed, p.temperature, p.effort, p.length, p.helpers], [1.3, 0, "off", "short", { chat: true, decide: true }]);
+    assert.deepEqual([p.speed, p.temperature, p.effort, p.length, p.helpers, p.model], [1.3, 0, "off", "short", { chat: true, decide: true }, null]);
+    assert.equal(cleanPersona({ name: "Gamma", model: " mimo-v2.6-9b " }, "g").model, "mimo-v2.6-9b");
+    assert.equal(cleanPersona({ name: "Gamma", model: 42 as never }, "g").model, null);
     const made = await (await personasApp.request("/", { method: "POST", body: JSON.stringify({ name: "Gamma", greeting: "Hi there." }) })).json();
     assert.match(made.id, /^gamma-[0-9a-f]{6}$/);
     const changed = await (await personasApp.request(`/${made.id}`, { method: "PUT", body: JSON.stringify({ ...made, speed: 1.1 }) })).json();

@@ -9,7 +9,7 @@ import { streamSSE } from "hono/streaming";
 import { WebSocketServer } from "ws";
 import { hitlVerdict, pastRuns, type RunOptions, runEvents, runs, startRun } from "./agent.ts";
 import { subscribe } from "./bus.ts";
-import { config, dockerEnv, ROOT } from "./config.ts";
+import { abs, config, dockerEnv, ROOT } from "./config.ts";
 import { db, now } from "./db.ts";
 import { decisions, type Questions } from "./decision.ts";
 import { buildStrata, cancelDownload, catalogStatus, startDownload } from "./downloads.ts";
@@ -34,7 +34,7 @@ app.get("/api/models", (c) =>
     main: config.models.main.map((m) => ({
       id: m.id, name: m.name, comingSoon: !!m.coming_soon, vision: !!m.supports_vision,
       reasoning: m.reasoning_levels ?? [], context: m.context ?? null,
-      available: !m.coming_soon && (m.engine === "strata" ? existsSync(path.join(ROOT, m.command ?? "-")) : existsSync(path.join(ROOT, m.model ?? "-"))),
+      available: !m.coming_soon && (m.engine === "strata" ? existsSync(abs(m.command ?? "-")) : existsSync(abs(m.model ?? "-"))),
     })),
     decision: config.models.decision.map((d) => ({ id: d.id, name: d.name, comingSoon: !!d.coming_soon })),
     active: activeMainId ?? null,

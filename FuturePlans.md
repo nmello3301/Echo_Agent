@@ -32,6 +32,25 @@ to "Done" with the date (or delete it). Known limitations of what already exists
   once there is GPU room for them.
 - **Kokoro's Japanese and Chinese voices** need misaki's phonemizers; left out for now.
 
+## Live (voice chat)
+
+- **A proper toolset with tool calling, so the voice model can call a larger model or an agent** (added 2026-11-11),
+  either to start agentic workflows or to get finer answers than a small voice model gives. Today the voice has two
+  hand-offs built into `live.ts`: `ask_chat` (the same model, thinking at medium, optionally with web search) and
+  `decide` (Jebadiah), one call per turn. The plan:
+  - **Tools in their own module**, like the agent's `tools/`: a schema, the line spoken while it works, a per-persona
+    switch, and several calls per turn.
+  - **Ask a larger model** (the 27B, or a cloud model) instead of the voice model thinking harder. Only one main model
+    fits on the 4090, so this needs a remote endpoint (see "Cloud fallback" under Models) or an asynchronous hand-off
+    that swaps the 27B in, answers, and swaps the voice model back.
+  - **Start an agent run by voice** ("fix the failing test in X"): the voice repeats the task and the folder back and
+    starts only on a yes; the run follows rules.md like any other. Also check on runs, say when one needs you, and take
+    the answer to its question by voice. The run needs the 27B, which can't load beside Live's model: queue it until
+    Live stops, or run it on a remote model.
+  - **Results that arrive later**: a long tool returns at once ("I've started it") and Live speaks the result between
+    turns when it lands (Live is half-duplex, so never over the user).
+  - **Notes search** (the RAG) and **web search** as tools of their own.
+
 ## Hugin (voice notes)
 
 - **UI pass** on Hugin's own web pages (from Hugin's README: reference images first).
