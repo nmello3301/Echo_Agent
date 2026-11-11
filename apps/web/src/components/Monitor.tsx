@@ -1,6 +1,6 @@
-import { useState } from "react";
-import { api, fmtBytes, fmtNum, useMetrics, useServerEvent } from "../api.ts";
-import { Badge, Bar, Button } from "./ui.tsx";
+import { useEffect, useState } from "react";
+import { api, fmtBytes, fmtNum, useMetrics, useModels, useServerEvent } from "../api.ts";
+import { Badge, Bar, Button, Select } from "./ui.tsx";
 
 function Sparkline({ values }: { values: (number | null)[] }) {
   const w = 220;
@@ -22,6 +22,75 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 
 const statusTone = (s: string) => (s === "ready" ? "good" : s === "starting" ? "warn" : s === "error" ? "bad" : "dim") as "good" | "warn" | "bad" | "dim";
 
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** The main model: which one is loaded, Unload to free the GPU now, and Load when none is. */
+function MainModel({ m, working }: { m: any; working?: string }) {
+  const models = useModels();
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ text: string; bad?: boolean }>();
+  const [pick, setPick] = useState("");
+  const main = m?.activeModel ? (m.engines ?? []).find((e: any) => e.id === m.activeModel) : undefined;
+  const loaded = main && (main.status === "ready" || main.status === "starting");
+  const available = (models?.main ?? []).filter((x) => x.available && !x.comingSoon);
+  const choice = pick || available.find((x) => x.id === models?.defaults.model)?.id || available[0]?.id || "";
+  // "Unloaded X: paused ..." is old news once a model is in again
+  useEffect(() => {
+    if (m?.activeModel) setNote(undefined);
+  }, [m?.activeModel]);
+
+  const unload = async () => {
+    setBusy(true);
+    setNote(undefined);
+    try {
+      const r = await api<{ name: string; paused: number; requests: number }>("/api/models/unload", { method: "POST" });
+      const what = [r.paused ? `paused ${plural(r.paused, "agent run")} (resume in the Agent tab)` : "", r.requests ? `stopped ${plural(r.requests, "answer")}` : ""].filter(Boolean);
+      setNote({ text: `Unloaded ${r.name}${what.length ? `: ${what.join(", ")}` : ""}.` });
+      setPick(main?.id ?? "");
+    } catch (e) {
+      setNote({ text: (e as Error).message, bad: true });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const load = async () => {
+    setNote(undefined);
+    await api("/api/models/active", { method: "POST", json: { id: choice } }).catch((e) => setNote({ text: e.message, bad: true }));
+  };
+
+  return (
+    <section className="space-y-1.5">
+      <h3 className="text-xs uppercase tracking-wide text-dim">Model</h3>
+      {loaded ? (
+        <div className="border border-line rounded p-2 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs truncate" title={main.name}>{main.name}</span>
+            <Badge tone={statusTone(main.status)}>{main.status === "starting" ? "loading" : "loaded"}</Badge>
+          </div>
+          {(working || main.loadMs > 0) && (
+            <div className="text-[11px] text-dim">{working ? `working: ${working}` : `idle · loaded in ${(main.loadMs / 1000).toFixed(1)} s`}</div>
+          )}
+          <Button kind="danger" className="w-full py-1! text-xs!" onClick={unload} disabled={busy}
+            title="Free the GPU now. Whatever uses the model stops at once: agent runs pause (resume them in the Agent tab), chat answers and Live stop where they are.">
+            {busy ? "Unloading…" : main.status === "starting" ? "Cancel loading" : "Unload"}
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          <p className="text-xs text-dim">No main model loaded. Chat, Live and agent runs load theirs when they need it.</p>
+          {available.length > 0 && (
+            <div className="flex gap-1.5">
+              <Select value={choice} onChange={setPick} className="flex-1 min-w-0 text-xs! py-1!" options={available.map((x) => ({ value: x.id, label: x.name }))} />
+              <Button className="py-1! text-xs!" onClick={load}>Load</Button>
+            </div>
+          )}
+        </div>
+      )}
+      {note && <div className={`text-[11px] ${note.bad ? "text-bad" : "text-dim"}`}>{note.text}</div>}
+    </section>
+  );
+}
+
 export function Monitor({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const m = useMetrics();
   const [phase, setPhase] = useState<{ phase: string; pHuman?: number }>({ phase: "idle" });
@@ -29,7 +98,7 @@ export function Monitor({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   const [log, setLog] = useState<string[]>([]);
   useServerEvent((e) => {
     if (e.type === "agent" && e.event.kind === "phase") setPhase((p) => ({ ...p, phase: e.event.phase }));
-    if (e.type === "agent" && e.event.kind === "status" && ["idle", "done", "stopped", "error"].includes(e.event.status)) setPhase((p) => ({ ...p, phase: "idle" }));
+    if (e.type === "agent" && e.event.kind === "status" && ["idle", "paused", "done", "stopped", "error"].includes(e.event.status)) setPhase((p) => ({ ...p, phase: "idle" }));
     if (e.type === "hitl_probability") setPhase((p) => ({ ...p, pHuman: e.p }));
     if (e.type === "engine_log" && e.id === logFor) setLog((l) => [...l.slice(-300), e.line]);
   }, [logFor]);
@@ -64,6 +133,8 @@ export function Monitor({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
       {m?.power && m.power.ac === false && <div className="text-xs text-warn border border-warn/40 rounded p-2">On battery ({m.power.battery}%): speed will drop.</div>}
       {g?.throttled && <div className="text-xs text-bad border border-bad/40 rounded p-2">GPU is thermally throttled ({g.temp} °C).</div>}
+
+      <MainModel m={m} working={s?.active ? s.source : phase.phase !== "idle" ? "agent run" : undefined} />
 
       <section className="space-y-1.5">
         <h3 className="text-xs uppercase tracking-wide text-dim">Tokens per second</h3>

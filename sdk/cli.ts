@@ -15,6 +15,7 @@ const HELP = `Echo SDK command line (talks to Echo at $ECHO_URL, default http://
   node sdk/cli.ts run [options] <task…>     start an agent run and follow it
   node sdk/cli.ts follow <run> [options]    follow a live run (--chat to keep talking to it)
   node sdk/cli.ts send <run> <text…>        send a follow-up and follow the turn
+  node sdk/cli.ts resume <run>              carry on after a pause (its model was unloaded) and follow the turn
   node sdk/cli.ts runs | stop <run> | diff <run> [--from sha]
 
   Self-work (the agent changing Echo itself, in a working copy you review before merging):
@@ -220,7 +221,8 @@ function finish(r: TurnResult) {
 async function follow(run: Run, first: TurnResult | Promise<TurnResult>) {
   let r = await first;
   finish(r);
-  while (o.chat && r.status === "idle") {
+  if (r.status === "paused" && !o.json && !o.quiet) out(yellow(`  its model was unloaded: node sdk/cli.ts resume ${run.id} (or send it a message) to carry on`));
+  while (o.chat && (r.status === "idle" || r.status === "paused")) {
     const next = await ask(cyan("» "));
     if (!next || next === "/exit") break;
     if (next === "/stop") {
@@ -437,7 +439,7 @@ async function main() {
       const s = await run.summary();
       if (!s) throw new Error("that run is not live (finished runs can be viewed in the UI, not followed)");
       out(dim(`${s.task.slice(0, 120)} · ${s.status}`));
-      if (s.status === "idle" || s.status === "stopped" || s.status === "error") {
+      if (s.status === "idle" || s.status === "paused" || s.status === "stopped" || s.status === "error") {
         return follow(run, { status: s.status, text: "", messages: [], toolCalls: [], decisions: 0, errors: [], durationMs: 0, lastSeq: s.events });
       }
       return follow(run, run.turn(handlers(), s.events));
@@ -445,6 +447,10 @@ async function main() {
     case "send": {
       const run = echo.run(need(rest[0], "run id"));
       return follow(run, run.send(need(rest.slice(1).join(" "), "text"), handlers()));
+    }
+    case "resume": {
+      const run = echo.run(need(rest[0], "run id"));
+      return follow(run, run.resume(handlers()));
     }
     case "stop":
       await echo.run(need(rest[0], "run id")).stop();

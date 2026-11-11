@@ -57,6 +57,56 @@ describe("provider layer", () => {
     assert.equal(r.timings?.predicted_per_second, 5);
     assert.ok(r.ttftMs !== null);
   });
+
+  test("unloading a model cuts off the requests to it, and says why; requests to other models go on", async () => {
+    const { abortEngineRequests } = await import("../src/llm.ts");
+    // a slow model: one delta, then nothing until the client gives up
+    const srv = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "Partial" } }] })}\n\n`);
+      req.on("close", () => res.end());
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    const base_url = `http://127.0.0.1:${(srv.address() as any).port}/v1`;
+    const own = new AbortController();
+    const cut = streamChat({ ...llama, id: "big", base_url }, { messages: [] }, () => {}, new AbortController().signal, "test");
+    const other = streamChat({ ...llama, id: "small", base_url }, { messages: [] }, () => {}, own.signal, "test");
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(abortEngineRequests("big", "Big was unloaded"), 1);
+    const r = await cut;
+    assert.deepEqual([r.aborted, r.stopped, r.content], [true, "Big was unloaded", "Partial"]);
+    own.abort();
+    const o = await other;
+    assert.deepEqual([o.aborted, o.stopped], [true, undefined], "stopped by its caller, not by an unload");
+    assert.equal(abortEngineRequests("big", "again"), 0, "finished requests are forgotten");
+    srv.close();
+  });
+});
+
+describe("unloading the model", () => {
+  test("a working agent run pauses and keeps its run; an idle one doesn't; a paused run stays paused", async () => {
+    const { AgentRun } = await import("../src/agent.ts");
+    const working = new AgentRun(tmp, "Do the thing", "off");
+    working.setStatus("action");
+    assert.equal(working.pause("Big was unloaded"), true);
+    assert.equal(working.status, "paused");
+    assert.match(String(working.events.at(-1)?.text), /^Paused: Big was unloaded\. Resume it/);
+    working.setStatus("idle"); // what Pi's settling after the abort would do
+    assert.equal(working.status, "paused", "the cut-off turn winding down doesn't overwrite the pause");
+    assert.equal(working.pause("again"), false);
+    assert.deepEqual(await working.waitFor("approval", { action: "rm x" }), { approved: false, reply: "pause" }, "nothing new waits for you while paused");
+    await working.stop();
+    assert.equal(working.status, "stopped", "a paused run can still be stopped");
+    assert.throws(() => working.resume(), /stopped/);
+
+    const idle = new AgentRun(tmp, "Wait for me", "off");
+    idle.setStatus("idle");
+    assert.equal(idle.pause("Big was unloaded"), false, "not working on the model: nothing to pause");
+    assert.throws(() => idle.resume(), /isn't paused/);
+    const waiting = new AgentRun(tmp, "Ask first", "off");
+    waiting.setStatus("waiting_approval");
+    assert.equal(waiting.pause("Big was unloaded"), false, "its approval card stays; answering it loads the model");
+  });
 });
 
 describe("decision layer", () => {

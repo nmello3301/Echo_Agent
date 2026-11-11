@@ -49,7 +49,7 @@ function CompactionNote({ ev }: { ev: any }) {
 }
 
 const statusTone = (s: string) =>
-  (({ action: "accent", decision: "warn", waiting_human: "bad", waiting_approval: "bad", idle: "good", done: "good", error: "bad" } as Record<string, any>)[s] ?? "dim");
+  (({ action: "accent", decision: "warn", waiting_human: "bad", waiting_approval: "bad", paused: "warn", idle: "good", done: "good", error: "bad" } as Record<string, any>)[s] ?? "dim");
 
 function DiffView({ diff }: { diff: string }) {
   if (!diff.trim()) return <p className="text-dim text-xs">No changes.</p>;
@@ -260,7 +260,7 @@ export function Agent() {
     setEvents((x) => [...x, ev]);
     if (ev.kind === "status") {
       setSummary((s: any) => (s ? { ...s, status: ev.status } : s));
-      if (["idle", "stopped", "error"].includes(ev.status)) loadRuns();
+      if (["idle", "paused", "stopped", "error"].includes(ev.status)) loadRuns();
     }
     if (ev.kind === "todo") setSummary((s: any) => (s ? { ...s, todo: ev.items } : s));
     if (ev.kind === "checkpoint") setSummary((s: any) => (s ? { ...s, checkpoints: [...(s.checkpoints ?? []), { sha: ev.sha, label: ev.label, ts: ev.ts }] } : s));
@@ -297,6 +297,14 @@ export function Agent() {
     try {
       await api(`/api/agent/runs/${runId}/message`, { method: "POST", json: { text: msg } });
       setMsg("");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  const resume = async () => {
+    try {
+      setError("");
+      await api(`/api/agent/runs/${runId}/resume`, { method: "POST" });
     } catch (e) {
       setError((e as Error).message);
     }
@@ -372,6 +380,12 @@ export function Agent() {
               {live && !["stopped", "error"].includes(summary?.status) && <Button kind="danger" onClick={() => api(`/api/agent/runs/${runId}/stop`, { method: "POST" })}>Stop</Button>}
             </header>
             {error && <div className="px-3 py-1.5 text-xs text-bad border-b border-line flex gap-2"><span className="flex-1">{error}</span><button className="text-dim hover:text-text" onClick={() => setError("")}>dismiss</button></div>}
+            {live && summary?.status === "paused" && (
+              <div className="px-3 py-2 text-sm text-warn border-b border-line flex flex-wrap items-center gap-2">
+                <span className="flex-1">Paused: its model was unloaded. Resume loads the model again and carries on; a message below does the same.</span>
+                <Button kind="primary" onClick={resume}>Resume</Button>
+              </div>
+            )}
             <div className="flex-1 flex min-h-0">
               <div className="flex-1 overflow-y-auto">
                 <div className="max-w-3xl mx-auto p-4 space-y-3">
@@ -434,7 +448,7 @@ export function Agent() {
               <footer className="border-t border-line p-3">
                 <div className="max-w-3xl mx-auto flex gap-2">
                   <input value={msg} onChange={(e) => setMsg(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()}
-                    placeholder={summary?.status === "idle" ? "Follow-up task or instructions (resumes the run)" : "Steer the running agent"} aria-label="Message to agent"
+                    placeholder={summary?.status === "idle" ? "Follow-up task or instructions (resumes the run)" : summary?.status === "paused" ? "A message resumes the run with it" : "Steer the running agent"} aria-label="Message to agent"
                     className="flex-1 bg-panel-2 border border-line rounded-md px-3 py-2" />
                   <Button kind="primary" onClick={send} disabled={!msg.trim()}>Send</Button>
                 </div>

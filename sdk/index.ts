@@ -2,7 +2,7 @@
 // No dependencies: runs on Node 22.18+ as plain .ts (type stripping), on the host or inside the container.
 
 export type Effort = "off" | "low" | "medium" | "high";
-export type RunStatus = "starting" | "action" | "decision" | "waiting_human" | "waiting_approval" | "idle" | "done" | "stopped" | "error";
+export type RunStatus = "starting" | "action" | "decision" | "waiting_human" | "waiting_approval" | "idle" | "paused" | "done" | "stopped" | "error";
 
 /** One entry of a run's timeline. Stored events carry `seq` (1, 2, ...); the live-only text_delta and
  *  thinking_delta events do not. Kinds: task, user, note, status, phase, message, text_delta, thinking_delta,
@@ -103,7 +103,8 @@ export class EchoError extends Error {
   }
 }
 
-const SETTLED = new Set<RunStatus>(["idle", "done", "stopped", "error"]);
+// paused: its model was unloaded mid-turn; resume() or send() carries on
+const SETTLED = new Set<RunStatus>(["idle", "paused", "done", "stopped", "error"]);
 const WORKING = new Set<RunStatus>(["starting", "action", "decision", "waiting_human", "waiting_approval"]);
 
 export class Echo {
@@ -345,6 +346,13 @@ export class Run {
   async send(text: string, handlers: TurnHandlers = {}): Promise<TurnResult> {
     const from = (await this.summary())?.events ?? 0;
     await this.echo.request("POST", `/api/agent/runs/${this.id}/message`, { text });
+    return this.turn(handlers, from);
+  }
+
+  /** Carry on after a pause (its model was unloaded mid-turn): loads the model again and follows the turn. */
+  async resume(handlers: TurnHandlers = {}): Promise<TurnResult> {
+    const from = (await this.summary())?.events ?? 0;
+    await this.echo.request("POST", `/api/agent/runs/${this.id}/resume`, {});
     return this.turn(handlers, from);
   }
 

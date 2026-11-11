@@ -1,7 +1,7 @@
 /** Live: hands-free voice chat with the main model. Listens on the microphone, detects the end of speech, sends the
  *  utterance to /api/live/turn and plays the spoken answer as it streams back; then listens again. */
 import { useEffect, useRef, useState } from "react";
-import { api, readSSE, useModels } from "../api.ts";
+import { api, readSSE, useModels, useServerEvent } from "../api.ts";
 import { Badge, Button, ModelSelect, Select } from "./ui.tsx";
 import { type Persona, PersonaBar, usePersonas } from "./LivePersonas.tsx";
 import { ChangeVoice, stopVoiceTest, useVoices } from "./Voices.tsx";
@@ -405,6 +405,12 @@ export function Live({ active }: { active: boolean }) {
     }
   }, [active]);
   useEffect(() => () => engine.current?.stop(), []);
+  // Live's model was unloaded (the Monitor), or another loaded in its place: stop listening rather than load it back
+  useServerEvent((e) => {
+    if (e.type !== "main_unloaded" || e.id !== settings.current.model || !engine.current || engine.current.phase === "off") return;
+    engine.current.stop();
+    setError(`Live stopped: ${e.reason}. Press Start to load it again.`);
+  }, []);
 
   async function start() {
     setError("");

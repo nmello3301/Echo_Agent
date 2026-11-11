@@ -158,6 +158,7 @@ async function runTool(call: ToolCall, lastQuestion: string, signal: AbortSignal
   const res: StreamResult = args.web
     ? await chatWithWeb(m, req, async () => {}, async () => {}, signal, 1)
     : await streamChat(m, req, () => {}, signal, "live-chat");
+  if (res.stopped) throw new Error(`Stopped: ${res.stopped}.`);
   const conversationId = saveChat(question, res, m.id);
   return {
     model: "chat", detail: { question, conversationId, web: !!args.web, chars: res.content.length }, ms: Math.round(performance.now() - t),
@@ -349,6 +350,7 @@ liveApp.post("/turn", async (c) => {
         messages: history, ...liveTools(persona),
         ...effortFields(m, effort), ...replyFields(persona, effort), cache_prompt: true,
       }, onDelta, ac.signal, "live");
+      if (res.stopped) throw new Error(`Stopped: ${res.stopped}.`);
       const call = res.toolCalls[0];
       if (call?.function.name && !res.aborted) {
         // say it is thinking right away, ask the other model, then come back with a summary that names it
@@ -365,6 +367,7 @@ liveApp.post("/turn", async (c) => {
             { role: "tool", tool_call_id: call.id || "call_0", content: used.result }],
           ...effortFields(m, "off"), ...replyFields(persona, "off"), cache_prompt: true,
         }, onDelta, ac.signal, "live");
+        if (res.stopped) throw new Error(`Stopped: ${res.stopped}.`);
         const rest = chunker.flush();
         if (rest) speak(rest);
         if (!mentionsModel(res.content, used.model)) {

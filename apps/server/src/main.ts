@@ -13,7 +13,7 @@ import { abs, config, dockerEnv, ROOT } from "./config.ts";
 import { db, now } from "./db.ts";
 import { decisions, type Questions } from "./decision.ts";
 import { buildStrata, cancelDownload, catalogStatus, startDownload } from "./downloads.ts";
-import { activeMain, activeMainId, allEngines, engineById, huginEnv, startDecision, startHugin, startRag, startSearch, startStt, startTts, stopAll, useMainModel } from "./engines.ts";
+import { activeMain, activeMainId, allEngines, engineById, huginEnv, startDecision, startHugin, startRag, startSearch, startStt, startTts, stopAll, unloadMain, useMainModel } from "./engines.ts";
 import { gitApp } from "./gitview.ts";
 import { type Effort, effortFields, type StreamResult, streamChat } from "./llm.ts";
 import { liveApp, transcribe } from "./live.ts";
@@ -46,6 +46,15 @@ app.post("/api/models/active", async (c) => {
   const { id } = await c.req.json<{ id: string }>();
   useMainModel(id).catch((e) => console.error("[engines]", e.message));
   return c.json({ ok: true });
+});
+
+/** Unload the main model now (the Monitor): agent runs working on it pause, chat answers and Live turns stop. */
+app.post("/api/models/unload", async (c) => {
+  try {
+    return c.json(await unloadMain());
+  } catch (e) {
+    return c.json(err(e), 400);
+  }
 });
 
 app.get("/api/engines", (c) => c.json(allEngines().map((e) => e.info())));
@@ -144,7 +153,7 @@ app.post("/api/chat", async (c) => {
         searches = r.searches.length ? r.searches : undefined;
         res = r;
       } else res = await streamChat(m, req, relay, ac.signal, "chat");
-      const stats = { ...res.timings, ttft_ms: res.ttftMs, aborted: res.aborted, model: m.id, effort: body.effort, sources: sources.length ? sources : undefined, searches };
+      const stats = { ...res.timings, ttft_ms: res.ttftMs, aborted: res.aborted, stopped: res.stopped, model: m.id, effort: body.effort, sources: sources.length ? sources : undefined, searches };
       db.prepare("INSERT INTO messages (conversation_id, role, content, reasoning, stats, created_at) VALUES (?,?,?,?,?,?)")
         .run(id, "assistant", JSON.stringify(res.content), res.reasoning || null, JSON.stringify(stats), now());
       await stream.writeSSE({ event: "done", data: JSON.stringify({ stats }) });
@@ -291,6 +300,14 @@ app.post("/api/agent/runs/:id/explain", async (c) => {
   try {
     const { requestId } = await c.req.json<{ requestId: string }>();
     return c.json({ text: await run(c.req.param("id")).explain(requestId) });
+  } catch (e) {
+    return c.json(err(e), 400);
+  }
+});
+app.post("/api/agent/runs/:id/resume", async (c) => {
+  try {
+    run(c.req.param("id")).resume();
+    return c.json({ ok: true });
   } catch (e) {
     return c.json(err(e), 400);
   }

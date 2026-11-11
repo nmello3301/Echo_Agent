@@ -3,6 +3,7 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, type WriteStrea
 import path from "node:path";
 import { publish } from "./bus.ts";
 import { abs, attach, config, type DecisionModel, dockerEnv, type MainModel, ROOT } from "./config.ts";
+import { abortEngineRequests } from "./llm.ts";
 
 export type EngineStatus = "stopped" | "starting" | "ready" | "error";
 
@@ -128,7 +129,8 @@ export class Engine {
     }
   }
 
-  async stop(): Promise<void> {
+  /** SIGTERM, then SIGKILL if it is still there after graceMs */
+  async stop(graceMs = 20_000): Promise<void> {
     if (this.spec.external) return; // Docker Compose owns its lifecycle
     if (this.spec.stopCmd) {
       const [c, ...a] = this.spec.stopCmd;
@@ -144,7 +146,7 @@ export class Engine {
       process.kill(-p.pid, "SIGTERM");
     } catch {}
     const t0 = Date.now();
-    while (this.proc && Date.now() - t0 < 20_000) await new Promise((r) => setTimeout(r, 200));
+    while (this.proc && Date.now() - t0 < graceMs) await new Promise((r) => setTimeout(r, 200));
     if (this.proc?.pid) {
       try {
         process.kill(-this.proc.pid, "SIGKILL");
@@ -252,9 +254,61 @@ function get(spec: Spec): Engine {
 
 export let activeMainId: string | undefined;
 let switching: Promise<void> | undefined;
+// Counts unloads: a load asked for before an unload is dropped, so nothing queued brings the model straight back
+let unloads = 0;
+
+export interface Unload {
+  id: string;
+  name: string;
+  /** Why, as the end of "Paused: ...": "Qwen3.8 27B was unloaded" */
+  reason: string;
+}
+/** Returns how many agent runs it paused */
+type UnloadListener = (u: Unload) => number | void;
+const unloadListeners: UnloadListener[] = [];
+
+/** Called the moment a main model is about to stop, unloaded or replaced by another: whatever works on it stops.
+ *  (agent.ts pauses its runs here; engines.ts can't import agent.ts, which imports it.) */
+export function onMainUnload(fn: UnloadListener) {
+  unloadListeners.push(fn);
+}
+
+/** Stop the work on a main model first (agent runs pause, requests to it are cut off), then the model itself. */
+async function stopMain(e: Engine, reason: string, graceMs?: number): Promise<{ paused: number; requests: number }> {
+  const u = { id: e.spec.id, name: e.spec.name, reason };
+  let paused = 0;
+  for (const fn of unloadListeners) {
+    try {
+      paused += fn(u) || 0;
+    } catch (err) {
+      console.error("[engines] unload listener:", (err as Error).message);
+    }
+  }
+  const requests = abortEngineRequests(e.spec.id, reason);
+  publish({ type: "main_unloaded", ...u, paused, requests });
+  await e.stop(graceMs);
+  return { paused, requests };
+}
+
+/** Unload the main model now (the Monitor's Unload button), to free the GPU. Agent runs working on it pause, and
+ *  chat answers and Live turns stop where they are. It loads again when something needs it. */
+export async function unloadMain(): Promise<Unload & { paused: number; requests: number }> {
+  if (attach.on) throw new Error("This is a dev instance: it uses the live Echo's model, so unload it there.");
+  const e = activeMainId ? engines.get(activeMainId) : undefined;
+  if (!e || (e.status !== "ready" && e.status !== "starting")) throw new Error("No main model is loaded.");
+  unloads++;
+  activeMainId = undefined;
+  publish({ type: "active_model", id: null });
+  const reason = `${e.spec.name} was unloaded`;
+  const r = await stopMain(e, reason, 5_000);
+  // An engine Echo adopted instead of starting has no process here to stop
+  if (await e.healthy()) throw new Error(`${e.spec.name} still answers on its port: it was started outside Echo, so Echo can't stop it.`);
+  return { id: e.spec.id, name: e.spec.name, reason, ...r };
+}
 
 /** Start a main model, stopping any other main model first (they cannot share RAM and VRAM). */
 export async function useMainModel(id: string): Promise<void> {
+  const asked = unloads;
   const m = config.models.main.find((x) => x.id === id && !x.coming_soon);
   if (!m) throw new Error(`unknown model ${id}`);
   if (m.engine !== "strata" && m.model && !existsSync(abs(m.model))) throw new Error(`${m.name}: model file not downloaded yet (${m.model})`);
@@ -268,7 +322,15 @@ export async function useMainModel(id: string): Promise<void> {
     return e.start();
   }
   const run = async () => {
-    for (const e of engines.values()) if (e.spec.role === "main" && e.spec.id !== id) await e.stop();
+    const dropped = () => new Error(`${m.name} was not loaded: a model was unloaded after it was asked for`);
+    if (asked !== unloads) throw dropped();
+    for (const e of engines.values()) {
+      if (e.spec.role !== "main" || e.spec.id === id) continue;
+      // the work on the model it replaces pauses, as on an unload
+      if (e.status === "ready" || e.status === "starting") await stopMain(e, `${e.spec.name} was unloaded to load ${m.name}`);
+      else await e.stop();
+    }
+    if (asked !== unloads) throw dropped();
     const gpu = m.engine !== "strata";
     if (gpu !== helpersOnGpu) {
       helpersOnGpu = gpu;

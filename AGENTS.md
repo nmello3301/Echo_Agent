@@ -19,7 +19,9 @@ gitview.ts) rather than growing main.ts.
   (`emit` → bus → `/ws` and `GET /api/agent/runs/:id/events`). `compaction.ts`: when a run compacts (echo.yaml
   `agent.compact_at`, 70% of the window) and Echo's summary (Pi's, plus the plan and the user's messages word for word).
 - `engines.ts`: the `Engine` class and one `*Spec()` per process (main model, decision model, notes RAG, TTS, SearXNG,
-  Hugin). `get(spec).start()` starts or adopts a process and waits for its health URL.
+  Hugin). `get(spec).start()` starts or adopts a process and waits for its health URL. `useMainModel(id)` swaps the
+  main model and `unloadMain()` frees it (the Monitor's Unload); either way the old model's work stops first: agent
+  runs on it pause (`onMainUnload`, registered in agent.ts) and `streamChat` requests to it are aborted.
 - `llm.ts`: `streamChat(model, body, onDelta, signal, source)`, OpenAI-compatible streaming to the main model;
   `effortFields(model, effort)` sets reasoning effort.
 - `live.ts`: the Live tab's voice turns; `personas.ts`: its personas (routes at /api/live/personas).

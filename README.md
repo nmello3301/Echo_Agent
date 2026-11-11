@@ -30,6 +30,21 @@ Right-click either one for **Stop Echo**. `Start Echo.sh` and `Stop Echo.sh` in 
 
 Keys: Alt+1..6 switch tabs, Alt+M collapses the Monitor.
 
+## Monitor
+
+The panel on the right shows speed, context, GPU, RAM, CPU and every engine. **Model**, at the top, says which main
+model is loaded and whether it is working. **Unload** frees the GPU at once (for a game, or for a GPU voice), and
+whatever uses the model stops within a second:
+
+- Agent runs working on it **pause** and keep everything. **Resume** in the Agent tab (or a message to the run) loads
+  the model again and carries on; the run is told its last step was cut off. A run waiting for your answer keeps its
+  card, and answering it loads the model first.
+- Chat answers stop where they are ("stopped: Qwen3.8 27B was unloaded"), and Live stops listening.
+
+Nothing loads the model back on its own: the next chat message, Live's Start or an agent run does, or **Load** in the
+same place. Loading another main model (a different one in Chat, Live's picker, an agent run) does the same to the one
+it replaces, since only one fits.
+
 ## Chat tab
 
 *Search the web* gives the model `web_search` (SearXNG) and `fetch_page`, the agent's own web tools: it decides
@@ -80,7 +95,7 @@ that starts the first time you use one of their voices. Qwen3-TTS loads in ~5 s 
 (its preset speakers and its cloning are two models); VoxCPM2 loads in ~30 s and takes ~7 GB. Only one of the two
 stays loaded, and the worker stops after 10 minutes unused, which frees the memory. Each model runs on the GPU when it
 fits (Qwen3-TTS needs ~4.5 GB free, VoxCPM2 ~7.5 GB) and otherwise on the CPU, in bfloat16 where the CPU supports it, as
-this Ryzen does. The 27B normally fills the card, so stop it on the Monitor tab first; the next request then moves the
+this Ryzen does. The 27B normally fills the card, so unload it on the Monitor first; the next request then moves the
 model to the GPU. Only VoxCPM2 on the GPU keeps up with real time: otherwise Read waits for the whole text, and in Live
 they delay every answer (Live speaks each sentence as soon as it is written), which the picker says.
 
@@ -89,8 +104,8 @@ which replays each decoding step as a captured CUDA graph. Plain Qwen3-TTS spend
 small steps from Python, so it manages ~0.6x on the 4090 with the card a third busy; Fast makes ~3.5x real time on the
 same card (measured on the preset Ryan and two clones: 9 s of speech in ~2.5 s, a short sentence in ~0.3-0.5 s). It
 uses Qwen3-TTS's download, preset speakers and cloned voices (a clone made in either model shows in both), and it only
-runs on the GPU: each of its two models needs ~4.5 GB free (~3.2 GB each once loaded), so stop the 27B on the Monitor
-tab first, or it says so instead of speaking. The first sentence after it loads takes ~20 s (loading and capturing the
+runs on the GPU: each of its two models needs ~4.5 GB free (~3.2 GB each once loaded), so unload the 27B on the
+Monitor first, or it says so instead of speaking. The first sentence after it loads takes ~20 s (loading and capturing the
 graphs), and the worker unloads after 10 minutes unused.
 Both Qwen3-TTS models sometimes keep making sound after the text is said (3 of 16 tries at a ~5 s sentence made
 22-60 s): each sentence is capped at a generous length for its text, and one that reaches the cap is said again, up

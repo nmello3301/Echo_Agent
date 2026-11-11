@@ -66,7 +66,9 @@ Change voice and the model picker save to it.
 Echo's), else `live.model`, each only if it is downloaded, else whichever main model is loaded (`liveModelId`). The tab
 sends Echo's pick from the browser's `localStorage` (`echo.live.model`) or the persona's. Only one main model fits, so a
 pick that is not loaded is swapped in by the request; the tab calls `/warm` when the pick or the persona changes while
-Live runs, and shows "loading ..." if that takes over 1.5 s.
+Live runs, and shows "loading ..." if that takes over 1.5 s. If Live's model is unloaded (the Monitor) or replaced by
+another one (Chat, an agent run) while Live runs, the turn in flight stops and the tab stops listening, saying why
+(the `main_unloaded` server event), rather than loading it straight back.
 
 `timings` (ms from the moment the request arrived): `stt`, `firstToken`, `tts` (first chunk), `firstAudio`,
 `llm`, `total`, and `tool` when another model was asked.

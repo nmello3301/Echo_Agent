@@ -93,7 +93,9 @@ console.log(await run.diff());
 ```
 
 - `echo.start(opts)` returns a `Run` without waiting; `run.turn(handlers)` follows the current turn until it
-  settles (`idle`, `stopped` or `error`) and returns a `TurnResult`.
+  settles (`idle`, `paused`, `stopped` or `error`) and returns a `TurnResult`.
+- `paused`: the run's model was unloaded (the Monitor's Unload, or another main model loaded in its place) while it
+  worked. `run.resume()` (CLI: `node sdk/cli.ts resume <run>`) or `run.send(text)` loads the model and carries on.
 - `run.events({ after })` is the raw stream: stored events (numbered by `seq`) after `after`, then live ones,
   including `text_delta` and `thinking_delta` as the model writes. It reconnects from the last `seq` if the
   connection drops.
@@ -111,7 +113,8 @@ The SDK uses these endpoints, also usable directly:
 | --- | --- |
 | `POST /api/agent/runs` | `{cwd, task, effort?, model?, instructions?, stepBudget?}` → the run's summary |
 | `GET /api/agent/runs/:id/events?after=N` | SSE: stored events after seq N, then live ones (`event: event`), `ping` every 15 s |
-| `POST /api/agent/runs/:id/message` · `/answer` · `/stop` · `/revert` | follow-up, approval/reply, stop, revert |
+| `POST /api/agent/runs/:id/message` · `/answer` · `/resume` · `/stop` · `/revert` | follow-up, approval/reply, carry on after a pause, stop, revert |
+| `POST /api/models/unload` | unload the main model: runs working on it pause → `{id, name, reason, paused, requests}` |
 | `GET /api/agent/runs/:id` · `/diff` | summary and stored events; changes since the start |
 | `POST /api/self/link` · `/api/self/verify` | `{dir}`: link a working copy; check it |
 | `GET /api/self/dev` · `POST /api/self/dev/start` · `/stop` · `GET /api/self/dev/logs` | the dev instance |

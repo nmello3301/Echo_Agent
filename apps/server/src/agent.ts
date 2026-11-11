@@ -22,7 +22,7 @@ import { publish } from "./bus.ts";
 import { abs, config, type MainModel } from "./config.ts";
 import { db, now } from "./db.ts";
 import { type Answer, decisions, type Questions } from "./decision.ts";
-import { activeMain, useMainModel } from "./engines.ts";
+import { activeMain, activeMainId, onMainUnload, useMainModel } from "./engines.ts";
 import { compactionSettings, compactsAt, contextSettings, echoCompaction } from "./compaction.ts";
 import { checkpoint, diffSince, diffStat, initRepo, isRepo, revertTo } from "./git.ts";
 import { effortFields, streamChat } from "./llm.ts";
@@ -33,7 +33,13 @@ import { sandboxedShell } from "./tools/util.ts";
 import { classify, extensionDirsOnDisk, loadRules, pathVerdict, rememberExtensionDir, type Rules } from "./rules.ts";
 
 type Effort = "off" | "low" | "medium" | "high";
-type RunStatus = "starting" | "action" | "decision" | "waiting_human" | "waiting_approval" | "idle" | "done" | "stopped" | "error";
+type RunStatus = "starting" | "action" | "decision" | "waiting_human" | "waiting_approval" | "idle" | "paused" | "done" | "stopped" | "error";
+
+// What a run is told when it carries on after a pause (its model was unloaded mid-turn)
+const RESUMED = "The run was paused because its model was unloaded, and has now resumed. Whatever was running at that " +
+  "moment was cut off: a command may not have finished, an edit may not have been made, and your last reply was lost. " +
+  "Check where you were (the plan, the files you were changing, git status), then carry on with the task.";
+const PAUSED_TOOL = "The run was paused (its model was unloaded) before this ran, so it did not run. When the run resumes, decide again whether it is still needed.";
 
 export interface TimelineEvent {
   kind: string;
@@ -226,8 +232,14 @@ export class AgentRun {
   private approvedCommands = new Set<string>();
   pending = new Map<string, Pending>();
   private model: MainModel | undefined;
+  /** The model it runs on, known before it has loaded */
+  private modelId: string | undefined;
   private instruction = "";
   private stopped = false;
+  /** Its model was unloaded mid-turn: nothing runs until resume() or a message */
+  private paused = false;
+  /** The task has gone to the model (a run paused while its model loaded had not sent it yet) */
+  private prompted = false;
   private hitCapWithoutTool = false;
   private autoContinues = 0;
   /** Pi's model object, for Echo's compaction summaries */
@@ -271,14 +283,67 @@ export class AgentRun {
 
   setStatus(s: RunStatus) {
     if (this.stopped && s !== "stopped") return;
+    if (this.paused && s !== "paused" && s !== "stopped") return; // work cut off by the pause still winds down
     this.status = s;
     this.emit("status", { status: s });
+  }
+
+  usesModel(id: string) {
+    return (this.model?.id ?? this.modelId) === id;
+  }
+
+  /** Its model is about to stop (unloaded, or another loaded in its place): if it is working on it, stop now and keep
+   *  the run, to go on with resume() or a message. A run waiting for you keeps its card: answering it loads the model
+   *  again first (waitFor). Returns whether it paused. */
+  pause(reason: string): boolean {
+    if (this.stopped || this.paused || !["starting", "action", "decision"].includes(this.status)) return false;
+    this.paused = true;
+    this.setStatus("paused");
+    this.emit("note", { text: `Paused: ${reason}. Resume it, or send a message, to carry on: the model loads again.` });
+    for (const p of [...this.pending.values()]) p.resolve({ approved: false, reply: "pause" });
+    void this.session?.abort().catch(() => {}); // the model's reply, a running command, a compaction
+    return true;
+  }
+
+  /** Carry on after a pause: load the model again, then continue (with the user's message, if there is one). Returns
+   *  once it has begun; the rest shows in the timeline. */
+  resume(text?: string) {
+    if (this.stopped) throw new Error("this run was stopped; start a new run");
+    if (!this.paused) throw new Error("this run isn't paused");
+    this.paused = false;
+    this.setStatus("starting");
+    void (async () => {
+      try {
+        await this.ensureModel();
+      } catch (e) {
+        this.paused = true;
+        this.setStatus("paused");
+        this.emit("error", { message: `Could not load the model to resume: ${(e as Error).message}` });
+        return;
+      }
+      if (this.paused) return; // paused again while it loaded
+      if (!this.session) return this.begin(); // paused before it began
+      this.setStatus("action");
+      this.emit("phase", { phase: "action" });
+      const task = this.prompted ? RESUMED : this.task;
+      this.prompted = true;
+      void this.prompt(text ? `${task}\n\nThe user's message: ${text}` : task);
+    })();
+  }
+
+  /** Load the run's model if another one (or none) is in: only one main model fits, and Live, Chat or the Monitor's
+   *  Unload may have swapped it out while the run waited. */
+  private async ensureModel() {
+    const id = this.modelId ?? this.model?.id ?? config.echo.default_model;
+    if (activeMainId === id && activeMain()?.engine.status === "ready") return;
+    this.emit("note", { text: `Loading ${this.model?.name ?? id}…` });
+    await useMainModel(id);
   }
 
   summary() {
     return {
       id: this.id, cwd: this.cwd, task: this.task, status: this.status, effort: this.effort,
-      todo: this.todo, checkpoints: this.checkpoints, model: this.model?.id,
+      todo: this.todo, checkpoints: this.checkpoints, model: this.model?.id ?? this.modelId,
       pending: [...this.pending.values()].map((p) => ({ id: p.id, kind: p.kind })),
       context: this.session?.getContextUsage?.(),
       compaction: this.model ? { ...contextSettings(), window: this.model.context ?? 32768, at: compactsAt(this.model.context ?? 32768) } : undefined,
@@ -341,9 +406,11 @@ export class AgentRun {
       request: req, recent: this.recent.slice(-12).map((r) => ({ tool: r.name, args: short(r.args, 200), result: short(r.result ?? "", 300), error: !!r.isError })),
       messages, checkpoint: cp, undo, stepBudget: this.stepBudget,
     });
+    await this.ensureModel(); // the Monitor may have unloaded it while the run waited
     const m = this.model ?? activeMain()?.model;
     if (!m) throw new Error("no model is loaded");
     const res = await streamChat(m, { messages: [{ role: "user", content: prompt }], ...effortFields(m, "off"), max_tokens: 500 }, () => {}, new AbortController().signal, "explain");
+    if (res.stopped) throw new Error(`stopped: ${res.stopped}`);
     const text = res.content.trim();
     if (!text) throw new Error("the model returned nothing; try again");
     this.explanations.set(requestId, text);
@@ -351,7 +418,17 @@ export class AgentRun {
   }
 
   // ---------- human interaction ----------
-  waitFor(kind: "hitl" | "approval", data: Record<string, unknown>): Promise<{ approved?: boolean; reply?: string; remember?: boolean }> {
+  async waitFor(kind: "hitl" | "approval", data: Record<string, unknown>): Promise<{ approved?: boolean; reply?: string; remember?: boolean }> {
+    if (this.paused) return { approved: false, reply: "pause" };
+    const v = await this.ask(kind, data);
+    // the run goes on to the model next, and while it waited the model may have been unloaded or swapped out
+    if (!this.paused && !this.stopped && v.reply !== "stop") {
+      await this.ensureModel().catch((e) => this.emit("error", { message: `Could not load the model: ${(e as Error).message}` }));
+    }
+    return v;
+  }
+
+  private ask(kind: "hitl" | "approval", data: Record<string, unknown>): Promise<{ approved?: boolean; reply?: string; remember?: boolean }> {
     const id = randomUUID();
     const prev = this.status;
     this.setStatus(kind === "hitl" ? "waiting_human" : "waiting_approval");
@@ -478,6 +555,7 @@ export class AgentRun {
         probability: pHuman, summary, options: ["continue", "re-plan", "revert", "stop"],
         next, progress, trigger: d.state?.trigger, queued: queued.map((x) => x.cmd),
       });
+      if (this.paused) return { block: true, text: PAUSED_TOOL, unsafe: queued.map(() => true), stopped: true, human: undefined };
       human = (r.reply ?? "").trim();
       const row = db.prepare("INSERT INTO hitl (run_id, probability, summary, reply, created_at) VALUES (?,?,?,?,?)")
         .run(this.id, pHuman, summary, human, now());
@@ -581,6 +659,7 @@ export class AgentRun {
         if (v.kind === "ask") {
           const folder = path.dirname(target);
           const r = await run.waitFor("approval", { action: `${name} ${target}`, reason: v.why, folder });
+          if (run.paused) return { block: true, reason: PAUSED_TOOL };
           if (!r.approved) return { block: true, reason: `The user did not approve writing ${target}.` };
           if (r.remember) {
             rememberExtensionDir(folder);
@@ -613,6 +692,7 @@ export class AgentRun {
             return { block: true, reason: `Decision time judged this action unsafe and dropped it: ${input.command}. ${g.text}` };
           }
           const r = await run.waitFor("approval", { action: String(input.command), reason: why, rule: v.category, decision: d.answers[`action_safe_0`] });
+          if (run.paused) return { block: true, reason: PAUSED_TOOL };
           run.setStatus("action");
           run.emit("phase", { phase: "action" });
           if (!r.approved) return { block: true, reason: `The user did not approve: ${input.command}${r.reply ? `. They said: ${r.reply}` : ""}` };
@@ -640,10 +720,17 @@ export class AgentRun {
     this.instruction = this.task;
     this.rules = loadRules();
     this.emit("task", { task: this.task, cwd: this.cwd, self: this.selfCheckout, stepBudget: this.stepBudget, instructions: this.opts.instructions });
+    this.modelId = modelId ?? activeMain()?.model.id ?? config.echo.default_model;
+    await this.begin();
+  }
+
+  /** Load the model, set up Pi's session and send the task (again from resume() if the run paused before that). */
+  private async begin() {
     try {
-      const id = modelId ?? activeMain()?.model.id ?? config.echo.default_model;
+      const id = this.modelId!;
       this.emit("note", { text: `Loading ${id}…` });
       await useMainModel(id);
+      if (this.paused) return;
       const m = activeMain()!.model;
       this.model = m;
       mkdirSync(AGENT_DIR, { recursive: true });
@@ -691,11 +778,14 @@ export class AgentRun {
       });
       this.session = session;
       session.subscribe((e: any) => this.onEvent(e));
-      await this.gitCheckpoint("run start").catch((e) => this.emit("note", { text: `checkpoint failed: ${e.message}` }));
+      if (!this.checkpoints.length) await this.gitCheckpoint("run start").catch((e) => this.emit("note", { text: `checkpoint failed: ${e.message}` }));
+      if (this.paused) return; // resume() sends the task
       this.setStatus("action");
       this.emit("phase", { phase: "action" });
+      this.prompted = true;
       void this.prompt(this.task);
     } catch (e) {
+      if (this.paused) return; // its model was unloaded while it loaded: resume() starts it again
       this.emit("error", { message: (e as Error).message });
       this.setStatus("error");
     }
@@ -705,7 +795,7 @@ export class AgentRun {
     try {
       await this.session!.prompt(text);
     } catch (e) {
-      if (this.status !== "stopped") {
+      if (this.status !== "stopped" && !this.paused) {
         this.emit("error", { message: (e as Error).message });
         this.setStatus("error");
       }
@@ -713,17 +803,26 @@ export class AgentRun {
   }
 
   async send(text: string) {
-    if (!this.session) throw new Error("run not started");
     if (this.stopped) throw new Error("this run was stopped; start a new run");
+    if (!this.session && !this.paused) throw new Error("run not started");
     this.instruction = text;
     this.autoContinues = 0;
     this.userMessages.push({ ts: Date.now(), text });
-    if (this.session.isStreaming) await this.session.steer(text);
-    else {
-      this.setStatus("action");
-      void this.prompt(text);
-    }
     this.emit("user", { text });
+    if (this.paused) return this.resume(text);
+    const session = this.session!;
+    if (session.isStreaming) return void (await session.steer(text));
+    this.setStatus("action");
+    void (async () => {
+      try {
+        await this.ensureModel(); // swapped out or unloaded while the run waited for this message
+      } catch (e) {
+        if (this.paused) return;
+        this.emit("error", { message: `Could not load the model: ${(e as Error).message}` });
+        return this.setStatus("idle");
+      }
+      if (!this.paused) await this.prompt(text);
+    })();
   }
 
   private onEvent(e: any) {
@@ -766,7 +865,7 @@ export class AgentRun {
         break;
       }
       case "agent_settled":
-        if (this.status === "stopped" || this.status === "error") break;
+        if (this.status === "stopped" || this.status === "error" || this.paused) break;
         if (this.hitCapWithoutTool && this.autoContinues < MAX_AUTO_CONTINUES) {
           this.hitCapWithoutTool = false;
           this.autoContinues++;
@@ -830,6 +929,9 @@ export class AgentRun {
 }
 
 export const runs = new Map<string, AgentRun>();
+
+// A main model is about to stop: the runs working on it pause (engines.ts stopMain)
+onMainUnload((u) => [...runs.values()].filter((r) => r.usesModel(u.id) && r.pause(u.reason)).length);
 
 export async function startRun(cwd: string, task: string, effort: Effort, model?: string, opts: RunOptions = {}) {
   const r = new AgentRun(cwd, task, effort, opts);

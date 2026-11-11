@@ -33,6 +33,22 @@ export interface StreamResult {
   ttftMs: number | null;
   finishReason?: string;
   aborted: boolean;
+  /** Why Echo cut it off, when it did (its model was unloaded): "Qwen3.8 27B was unloaded" */
+  stopped?: string;
+}
+
+// Requests on their way to a main model, so unloading the model can cut them off at once (stopMain in engines.ts)
+const inflight = new Set<{ model: string; ac: AbortController }>();
+
+/** Abort every request to this main model; the callers get an `aborted` result with `stopped` set to the reason. */
+export function abortEngineRequests(modelId: string, reason: string): number {
+  let n = 0;
+  for (const r of inflight) {
+    if (r.model !== modelId) continue;
+    r.ac.abort(reason);
+    n++;
+  }
+  return n;
 }
 
 /** Stream an OpenAI-compatible chat completion, calling onDelta for text and reasoning deltas. */
@@ -46,13 +62,16 @@ export async function streamChat(
   const t0 = performance.now();
   const res: StreamResult = { content: "", reasoning: "", toolCalls: [], ttftMs: null, aborted: false };
   const rate = new ArrivalRate();
+  const cut = { model: model.id, ac: new AbortController() };
+  inflight.add(cut);
+  const either = AbortSignal.any([signal, cut.ac.signal]);
   Object.assign(live, { active: true, source, decodeTps: null, ttftMs: null, generated: 0 });
   try {
     const r = await engineFetch(`${model.base_url}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer local" },
       body: JSON.stringify({ ...body, stream: true, timings_per_token: true, stream_options: { include_usage: true } }),
-      signal,
+      signal: either,
     });
     if (!r.ok || !r.body) throw new Error(`engine answered ${r.status}: ${(await r.text()).slice(0, 500)}`);
     const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -105,9 +124,11 @@ export async function streamChat(
       }
     }
   } catch (e) {
-    if (signal.aborted) res.aborted = true;
-    else throw e;
+    if (!either.aborted) throw e;
+    res.aborted = true;
+    if (cut.ac.signal.aborted && !signal.aborted) res.stopped = String(cut.ac.signal.reason);
   } finally {
+    inflight.delete(cut);
     live.active = false;
   }
   return res;

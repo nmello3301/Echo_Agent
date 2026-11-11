@@ -178,7 +178,7 @@ export function Chat() {
                         {m.stats.predicted_n != null && <span>{m.stats.predicted_n} tokens</span>}
                         {m.stats.ttft_ms != null && <span>TTFT {(m.stats.ttft_ms / 1000).toFixed(1)} s</span>}
                         {m.stats.draft_n ? <span>MTP {m.stats.draft_n_accepted}/{m.stats.draft_n}</span> : null}
-                        {m.stats.aborted && <span className="text-warn">stopped</span>}
+                        {m.stats.aborted && <span className="text-warn">{m.stats.stopped ? `stopped: ${m.stats.stopped}` : "stopped"}</span>}
                       </div>
                     )}
                   </div>
