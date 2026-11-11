@@ -11,3 +11,4 @@ data/
 __pycache__/
 evals/decisions.jsonl
 evals/rag-notes/*.wav
+NDK/
